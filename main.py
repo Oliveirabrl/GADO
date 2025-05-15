@@ -8,8 +8,8 @@ import os
 import base64
 
 # Caminhos para as imagens das logos
-logo_os_capital_path = r"C:/Users/Cliente HT/Desktop/programas python/PRODUÇÃO DE GADO/oscapital.jpeg"
-logo_interactive_brokers_path = r"C:/Users/Cliente HT/Desktop/programas python/PRODUÇÃO DE GADO/IB_logo_stacked1.jpg"
+logo_os_capital_path = "assets/oscapital.jpeg"
+logo_interactive_brokers_path = "assets/IB_logo_stacked1.jpg"
 
 # Função para converter imagem para Base64
 def image_to_base64(image_path):
