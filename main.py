@@ -7,29 +7,37 @@ import numpy_financial as npf
 import os
 import base64
 
+# Título do Dashboard
+st.title("Dashboard de Produção de Gado x Selic")
+
 # Caminhos para as imagens das logos
 logo_os_capital_path = "assets/oscapital.jpeg"
 logo_interactive_brokers_path = "assets/IB_logo_stacked1.jpg"
 
 # Função para converter imagem para Base64
 def image_to_base64(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode()
+    try:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode()
+    except Exception as e:
+        st.error(f"Erro ao carregar a imagem {image_path}: {str(e)}")
+        return None
 
 # Função para exibir a imagem com link incorporado e frase
 def display_linked_image(image_path, url, caption, width):
     if os.path.exists(image_path):
         # Converter a imagem para Base64
         base64_string = image_to_base64(image_path)
-        # Determinar o tipo de imagem (jpeg ou jpg) com base na extensão
-        image_format = "jpeg" if image_path.lower().endswith(".jpeg") else "jpg"
-        # Exibir a imagem com link incorporado usando HTML e Base64
-        st.markdown(
-            f'<a href="{url}" target="_blank"><img src="data:image/{image_format};base64,{base64_string}" width="{width}"></a>',
-            unsafe_allow_html=True
-        )
-        # Adicionar a frase abaixo da imagem
-        st.markdown(caption)
+        if base64_string:
+            # Determinar o tipo de imagem (jpeg ou jpg) com base na extensão
+            image_format = "jpeg" if image_path.lower().endswith(".jpeg") else "jpg"
+            # Exibir a imagem com link incorporado usando HTML e Base64
+            st.markdown(
+                f'<a href="{url}" target="_blank"><img src="data:image/{image_format};base64,{base64_string}" width="{width}"></a>',
+                unsafe_allow_html=True
+            )
+            # Adicionar a frase abaixo da imagem
+            st.markdown(caption)
     else:
         st.error(f"Imagem não encontrada: {image_path}. Verifique o caminho do arquivo.")
 
@@ -50,7 +58,7 @@ with col2:
     st.markdown("**Interactive Brokers**")
     display_linked_image(logo_interactive_brokers_path, "https://ibkr.com/referral/edgleison239", interactive_brokers_caption, interactive_brokers_width)
 
-# Barra lateral com parâmetros ajustáveis (todos pré-editados com valor 1)
+# Barra lateral com parâmetros ajustáveis (valores padrão ajustados para 1)
 st.sidebar.header("Parâmetros")
 selic_rate = st.sidebar.slider("Taxa Selic (% ao ano)", min_value=0.0, max_value=20.0, value=1.0, step=0.25)
 period_months = st.sidebar.slider("Período de Análise (meses)", min_value=1, max_value=36, value=1)
@@ -69,9 +77,30 @@ else:
 # Outros parâmetros
 sell_arroba_price = st.sidebar.number_input("Preço da Arroba na Venda (R$/arroba)", min_value=0.0, value=1.0, step=1.0)
 arrobas_gain_period = st.sidebar.number_input("Ganhos de Arrobas no Período", min_value=0.0, value=1.0, step=10.0)
-cost_per_arroba_feed = st.sidebar.number_input("Custo Médio por Arroba Mensal (Alimentação) (R$/arroba)", min_value=0.0, value=1.0, step=1.0)
+
+# Filtro de Custo Médio por Cabeça
+cost_per_head_feed = st.sidebar.number_input("Custo Médio Mensal por Cabeça (Alimentação) (R$/cabeça)", min_value=0.0, value=1.0, step=1.0)
+
 fixed_costs = st.sidebar.number_input("Custos Fixos (R$)", min_value=0.0, value=1.0, step=100.0)
-ir_rate = st.sidebar.selectbox("Alíquota de IR na Aplicação (%)", options=[22.5, 20.0, 17.5, 15.0], index=2)
+
+# Determinar a alíquota de IR com base no período de análise
+# Converter meses para dias (assumindo 30 dias por mês)
+period_days = period_months * 30
+
+# Definir a alíquota com base nas regras
+if period_days <= 180:
+    default_ir_rate = 22.5
+elif 181 <= period_days <= 360:
+    default_ir_rate = 20.0
+elif 361 <= period_days <= 720:
+    default_ir_rate = 17.5
+else:  # Acima de 721 dias
+    default_ir_rate = 15.0
+
+# Pré-selecionar a alíquota no selectbox
+ir_rate_options = [22.5, 20.0, 17.5, 15.0]
+ir_rate_index = ir_rate_options.index(default_ir_rate)
+ir_rate = st.sidebar.selectbox("Alíquota de IR na Aplicação (%)", options=ir_rate_options, index=ir_rate_index)
 
 # Validação dos campos obrigatórios
 if initial_investment <= 0 or buy_arroba_price <= 0 or sell_arroba_price <= 0:
@@ -81,8 +110,8 @@ else:
     total_arrobas_sold = total_arrobas_bought + arrobas_gain_period
     total_revenue = total_arrobas_sold * sell_arroba_price
     
-    # Cálculo dos custos totais, incluindo o custo com alimentação
-    feed_cost = cost_per_arroba_feed * total_arrobas_bought * period_months
+    # Cálculo do custo de alimentação por cabeça
+    feed_cost = cost_per_head_feed * num_heads_bought * period_months
     total_costs = initial_investment + fixed_costs + feed_cost
     total_profit = total_revenue - total_costs
 
