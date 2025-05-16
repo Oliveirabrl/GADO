@@ -39,76 +39,28 @@ def display_linked_image(image_path, url, caption, width):
     else:
         st.error(f"Imagem não encontrada: {image_path}. Verifique o caminho do arquivo.")
 
-# Função para carregar dados históricos do arquivo Excel do CEPEA
-def load_historical_data():
-    excel_file = "CEPEA_20250516120712.xls"
-    try:
-        # Tentar ler o arquivo Excel com diferentes motores
-        try:
-            df = pd.read_excel(excel_file, engine="xlrd")
-        except Exception as e_xlrd:
-            try:
-                df = pd.read_excel(excel_file, engine="openpyxl")
-            except Exception as e_openpyxl:
-                st.error(f"Erro ao ler o arquivo Excel: {str(e_xlrd)} (xlrd) / {str(e_openpyxl)} (openpyxl)")
-                return pd.DataFrame()
-        
-        # Ajustar nomes das colunas
-        df.columns = df.columns.str.strip()
-        if "Data" not in df.columns or "Valor" not in df.columns:
-            st.error("O arquivo Excel deve conter as colunas 'Data' e 'Valor'. Verifique o arquivo CEPEA_20250516120712.xls.")
-            return pd.DataFrame()
-        
-        # Converter a coluna 'Data' para datetime
-        df["Data"] = pd.to_datetime(df["Data"], format="%d/%m/%Y", errors="coerce")
-        df = df.dropna(subset=["Data"])  # Remover linhas com datas inválidas
-        
-        # Filtrar de 2020 até 16/05/2025
-        start_date = pd.to_datetime("2020-01-01")
-        end_date = pd.to_datetime("2025-05-16")
-        df = df[(df["Data"] >= start_date) & (df["Data"] <= end_date)]
-        
-        # Renomear a coluna 'Valor' para 'Cotação (R$/arroba)'
-        df = df.rename(columns={"Valor": "Cotação (R$/arroba)"})
-        
-        # Arredondar os valores para números inteiros
-        df["Cotação (R$/arroba)"] = df["Cotação (R$/arroba)"].round(0).astype(int)
-        
-        # Selecionar apenas as colunas necessárias
-        df = df[["Data", "Cotação (R$/arroba)"]]
-        
-        # Salvar como CSV para uso futuro
-        df.to_csv("cotacao_historica.csv", index=False)
-        return df
-    
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo Excel: {str(e)}")
-        return pd.DataFrame()
-
 # Função para obter a cotação mais recente do widget do CEPEA e atualizar o histórico
 @st.cache_data(ttl=300)  # Atualiza a cada 5 minutos (300 segundos)
 def fetch_arroba_data():
-    # Verificar se o CSV histórico já existe; se não, carregar do Excel
+    # Carregar diretamente o CSV histórico, sem tentar ler o Excel
     csv_file = "cotacao_historica.csv"
     if not os.path.exists(csv_file):
-        df = load_historical_data()
-        if df.empty:
-            # Dados de fallback (simulados) caso o Excel não seja carregado
-            end_date = datetime(2025, 5, 16)
-            start_date = pd.to_datetime("2020-01-01")
-            dates = pd.date_range(start=start_date, end=end_date, freq='D')
-            np.random.seed(42)
-            base_price = 280
-            trend = np.linspace(0, 50, len(dates))  # Tendência de alta ao longo dos anos
-            noise = np.random.normal(0, 5, len(dates))
-            prices = base_price + trend + noise
-            # Arredondar os valores simulados para números inteiros
-            prices = np.round(prices).astype(int)
-            df = pd.DataFrame({
-                "Data": dates,
-                "Cotação (R$/arroba)": prices
-            })
-            df.to_csv(csv_file, index=False)
+        # Se o CSV não existir, criar dados simulados
+        end_date = datetime(2025, 5, 16)
+        start_date = pd.to_datetime("2020-01-01")
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        np.random.seed(42)
+        base_price = 280
+        trend = np.linspace(0, 50, len(dates))  # Tendência de alta ao longo dos anos
+        noise = np.random.normal(0, 5, len(dates))
+        prices = base_price + trend + noise
+        # Arredondar os valores simulados para números inteiros
+        prices = np.round(prices).astype(int)
+        df = pd.DataFrame({
+            "Data": dates,
+            "Cotação (R$/arroba)": prices
+        })
+        df.to_csv(csv_file, index=False)
     else:
         df = pd.read_csv(csv_file)
         df["Data"] = pd.to_datetime(df["Data"])
