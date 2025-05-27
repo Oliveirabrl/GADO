@@ -126,6 +126,8 @@ arroba_data = arroba_data[arroba_data["Data"] >= start_date]
 # Agregar os dados para cotações semanais (média da cotação por semana)
 arroba_data.set_index("Data", inplace=True)
 weekly_data = arroba_data.resample('W').mean().reset_index()
+# Preencher valores NaN com a média dos valores não nulos
+weekly_data["Cotação (R$/arroba)"] = weekly_data["Cotação (R$/arroba)"].fillna(weekly_data["Cotação (R$/arroba)"].mean())
 weekly_data["Cotação (R$/arroba)"] = weekly_data["Cotação (R$/arroba)"].round(0).astype(int)
 
 # Criar o gráfico da cotação da arroba do boi gordo (semanal, apenas linha)
