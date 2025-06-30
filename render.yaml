@@ -1,8 +1,9 @@
-services:
-  - type: web
-    name: producao-gado-selic # Nome do seu serviço no Render. Pode mudar.
-    env: python
-    plan: free # Ou 'starter' para um plano pago
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python -m streamlit run main.py --server.port $PORT --server.enableCORS false --server.enableXsrfProtection false"
-    rootDirectory: GADO # Mantenha esta linha!
+ services:
+      - type: web
+        name: producao-gado-selic # Nome do seu serviço no Render. Pode mudar.
+        env: python
+        plan: free # Ou 'starter' para um plano pago
+        buildCommand: "pip install -r requirements.txt"
+        startCommand: "python -m streamlit run main.py --server.port $PORT --server.enableCORS false --server.enableXsrfProtection false"
+        # rootDirectory: GADO # REMOVA OU COMENTE ESTA LINHA!
+    
