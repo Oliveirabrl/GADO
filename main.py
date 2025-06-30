@@ -115,6 +115,43 @@ def fetch_arroba_data():
         st.error(f"Erro ao buscar cotações do widget: {str(e)}")
         return df, None, None
 
+# Função para converter taxa anual para mensal (MOVIDA PARA FORA DO ELSE)
+def annual_to_monthly_rate(annual_rate):
+    return (1 + annual_rate / 100) ** (1 / 12) - 1
+
+# Função para obter a tendência da Selic (projeções do Relatório Focus) (MOVIDA PARA FORA DO ELSE)
+def get_selic_trend(period_months):
+    months = [7, 19, 31, 43]  # Meses correspondentes a dez/2025, dez/2026, dez/2027, dez/2028 (a partir de maio/2025)
+    selic_values = [15.0, 12.5, 10.5, 10.0]
+    trend = []
+    for month in range(period_months + 1):
+        if month <= months[0]:
+            value = selic_values[0]
+        elif month >= months[-1]:
+            value = selic_values[-1]
+        else:
+            for i in range(len(months) - 1):
+                if months[i] <= month < months[i + 1]:
+                    t = (month - months[i]) / (months[i + 1] - months[i])
+                    value = selic_values[i] + t * (selic_values[i + 1] - selic_values[i])
+                    break
+            else: # If loop completes without break, it means month is between ranges
+                value = selic_values[-1] # Default to last known value if outside defined intervals but within overall period
+        trend.append(value)
+    return trend
+
+# Função para calcular o rendimento líquido da Selic (fixa) (MOVIDA PARA FORA DO ELSE)
+def calculate_selic_return(initial_investment, selic_rate, ir_rate, period_months):
+    selic_monthly_rate = annual_to_monthly_rate(selic_rate)
+    ir_rate_decimal = ir_rate / 100
+    monthly_net_rate = selic_monthly_rate * (1 - ir_rate_decimal)
+    values = []
+    for month in range(period_months + 1):
+        future_value = initial_investment * (1 + monthly_net_rate) ** month
+        values.append(future_value)
+    return values
+
+
 # Obter os dados da cotação e a cotação diária mais recente
 arroba_data, latest_date, latest_price = fetch_arroba_data()
 
@@ -210,36 +247,11 @@ else:
     # Calcular o lucro mensal médio para distribuição ao longo do período
     monthly_profit = total_profit / period_months
 
-    # Função para converter taxa anual para mensal
-    def annual_to_monthly_rate(annual_rate):
-        return (1 + annual_rate / 100) ** (1 / 12) - 1
-
-    # Função para obter a tendência da Selic (projeções do Relatório Focus)
-    def get_selic_trend(period_months):
-        months = [7, 19, 31, 43]  # Meses correspondentes a dez/2025, dez/2026, dez/2027, dez/2028 (a partir de maio/2025)
-        selic_values = [15.0, 12.5, 10.5, 10.0]
-        trend = []
-        for month in range(period_months + 1):
-            if month <= months[0]:
-                value = selic_values[0]
-            elif month >= months[-1]:
-                value = selic_values[-1]
-            else:
-                for i in range(len(months) - 1):
-                    if months[i] <= month < months[i + 1]:
-                        t = (month - months[i]) / (months[i + 1] - months[i])
-                        value = selic_values[i] + t * (selic_values[i + 1] - selic_values[i])
-                        break
-                else: # If loop completes without break, it means month is between ranges
-                    value = selic_values[-1] # Default to last known value if outside defined intervals but within overall period
-            trend.append(value)
-        return trend
+    # Obter tendência da Selic
+    selic_trend = get_selic_trend(period_months)
 
     # Cálculo para a aplicação Selic (fixa)
     selic_values = calculate_selic_return(initial_investment, selic_rate, ir_rate, period_months)
-
-    # Obter tendência da Selic (para o gráfico)
-    selic_trend = get_selic_trend(period_months)
 
     # Para a produção de gado, acumular o lucro mensalmente
     gado_values = []
