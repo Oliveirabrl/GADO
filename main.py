@@ -183,6 +183,7 @@ if arroba_data is not None and not arroba_data.empty:
         monthly_avg_data,
         x='Data',
         y='Cotação (R$/arroba)',
+        title="Cotação Média Mensal da Arroba do Boi Gordo (Últimos 3 Anos)",
         labels={'Data': 'Data', 'Cotação (R$/arroba)': 'Cotação Média (R$/arroba)'},
         markers=True
     )
@@ -193,31 +194,26 @@ if arroba_data is not None and not arroba_data.empty:
     )
     
     fig_arroba.update_layout(
+        title_x=0.5,
         xaxis_title="Data",
         yaxis_title="Cotação Média (R$/arroba)",
         plot_bgcolor='rgba(255, 255, 255, 0.1)',
         paper_bgcolor='rgba(0,0,0,0)',
         font_color='white',
-        height=450, # Aumenta a altura para dar espaço ao título
-        margin=dict(t=80), # Adiciona margem no topo
-        annotations=[
-            dict(
-                xref='paper', yref='paper',
-                x=0.01, y=1.0, # Canto superior esquerdo
-                text="<b>Cotação Média Mensal da Arroba do Boi Gordo (Últimos 3 Anos)</b>",
-                showarrow=False,
-                font=dict(size=16, color="white"),
-                align="left"
-            )
-        ]
+        height=400
     )
     
     fig_arroba.add_annotation(
-        x=0.5, y=0.5,
-        xref="paper", yref="paper",
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
         text="OS CAPITAL",
         showarrow=False,
-        font=dict(size=50, color="green"),
+        font=dict(
+            size=50,
+            color="green"
+        ),
         opacity=0.15
     )
     
@@ -252,6 +248,8 @@ with col_main:
 
 st.sidebar.header("Parâmetros da Simulação")
 initial_investment = st.sidebar.number_input("Investimento Inicial (R$)", min_value=1.0, value=100000.0, step=1000.0)
+# **LAYOUT ATUALIZADO**: Custo de capital movido para baixo do investimento inicial
+cost_of_capital_rate = st.sidebar.number_input("Custo de Capital (% ao ano)", min_value=0.0, value=0.0, step=0.5, format="%.2f")
 num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=1, value=50, step=1)
 period_months = st.sidebar.slider("Período de Análise (meses)", min_value=1, max_value=48, value=12)
 
@@ -266,6 +264,7 @@ st.sidebar.markdown("---")
 
 cost_per_head_feed = st.sidebar.number_input("Custo Mensal por Cabeça (Alimentação, etc.) (R$)", min_value=0.0, value=80.0, step=5.0)
 fixed_costs = st.sidebar.number_input("Outros Custos Fixos no Período (R$)", min_value=0.0, value=5000.0, step=100.0)
+
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Parâmetros da Aplicação")
@@ -292,7 +291,10 @@ else:
     total_revenue = total_arrobas_sold * sell_arroba_price
     
     feed_cost = cost_per_head_feed * num_heads_bought * period_months
-    total_costs = initial_investment + fixed_costs + feed_cost
+    
+    capital_cost = initial_investment * (cost_of_capital_rate / 100) * (period_months / 12)
+    
+    total_costs = initial_investment + fixed_costs + feed_cost + capital_cost
     total_profit_gado = total_revenue - total_costs
     
     gado_values = np.linspace(initial_investment, initial_investment + total_profit_gado, period_months + 1).tolist()
@@ -346,7 +348,7 @@ else:
         
         gain_from_arrobas = total_arrobas_gain * sell_arroba_price
         price_difference_profit = (sell_arroba_price - buy_arroba_price) * total_arrobas_bought
-        total_op_cost = fixed_costs + feed_cost
+        total_op_cost = fixed_costs + feed_cost + capital_cost
 
         table_data = {
             "Métrica": [
@@ -357,6 +359,7 @@ else:
                 "--- Detalhamento do Gado ---",
                 "Ganho com Aumento de Arrobas (R$)",
                 "Ganho/Perda com Diferença de Preço (R$)",
+                "Custo de Capital (Juros) (R$)",
                 "Custo Operacional Total (R$)",
             ],
             "Valor": [
@@ -367,6 +370,7 @@ else:
                 "",
                 f"R$ {gain_from_arrobas:,.2f}",
                 f"R$ {price_difference_profit:,.2f}",
+                f"- R$ {capital_cost:,.2f}",
                 f"- R$ {total_op_cost:,.2f}",
             ]
         }
