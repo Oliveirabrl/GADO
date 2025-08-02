@@ -183,7 +183,6 @@ if arroba_data is not None and not arroba_data.empty:
         monthly_avg_data,
         x='Data',
         y='Cotação (R$/arroba)',
-        title="Cotação Média Mensal da Arroba do Boi Gordo (Últimos 3 Anos)",
         labels={'Data': 'Data', 'Cotação (R$/arroba)': 'Cotação Média (R$/arroba)'},
         markers=True
     )
@@ -194,27 +193,31 @@ if arroba_data is not None and not arroba_data.empty:
     )
     
     fig_arroba.update_layout(
-        title_x=0.5,
         xaxis_title="Data",
         yaxis_title="Cotação Média (R$/arroba)",
         plot_bgcolor='rgba(255, 255, 255, 0.1)',
         paper_bgcolor='rgba(0,0,0,0)',
         font_color='white',
-        height=400
+        height=450, # Aumenta a altura para dar espaço ao título
+        margin=dict(t=80), # Adiciona margem no topo
+        annotations=[
+            dict(
+                xref='paper', yref='paper',
+                x=0.01, y=1.0, # Canto superior esquerdo
+                text="<b>Cotação Média Mensal da Arroba do Boi Gordo (Últimos 3 Anos)</b>",
+                showarrow=False,
+                font=dict(size=16, color="white"),
+                align="left"
+            )
+        ]
     )
     
-    # **NOVO**: Adiciona a marca d'água ao gráfico de cotação
     fig_arroba.add_annotation(
-        x=0.5,
-        y=0.5,
-        xref="paper",
-        yref="paper",
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
         text="OS CAPITAL",
         showarrow=False,
-        font=dict(
-            size=50,
-            color="green"
-        ),
+        font=dict(size=50, color="green"),
         opacity=0.15
     )
     
