@@ -9,6 +9,7 @@ import base64
 from datetime import datetime, timedelta
 import requests
 import re
+import plotly.express as px # Importa a biblioteca Plotly
 
 # Ajustar o layout para "wide" e maximizar o uso do espaço
 st.set_page_config(layout="wide")
@@ -16,8 +17,10 @@ st.set_page_config(layout="wide")
 # Título do Dashboard (centralizado e com tamanho ajustado)
 st.markdown("<h1 style='text-align: center; font-size: 3rem;'>Dashboard de Produção de Gado x Selic</h1>", unsafe_allow_html=True)
 
-# Função para converter imagem para Base64
+# --- FUNÇÕES AUXILIARES ---
+
 def image_to_base64(image_path):
+    """Converte uma imagem local para uma string Base64."""
     try:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode()
@@ -25,356 +28,362 @@ def image_to_base64(image_path):
         st.error(f"Erro ao carregar a imagem {image_path}: {str(e)}")
         return None
 
-# Função para exibir a imagem com link incorporado e frase
 def display_linked_image(image_path, url, caption, width):
+    """Exibe uma imagem com um link incorporado."""
     if os.path.exists(image_path):
         base64_string = image_to_base64(image_path)
         if base64_string:
-            image_format = "jpeg" if image_path.lower().endswith(".jpeg") else "jpg"
+            image_format = "jpeg" if image_path.lower().endswith((".jpeg", ".jpg")) else "png"
             st.markdown(
                 f'<a href="{url}" target="_blank"><img src="data:image/{image_format};base64,{base64_string}" width="{width}"></a>',
                 unsafe_allow_html=True
             )
             st.markdown(caption, unsafe_allow_html=True)
     else:
-        st.error(f"Imagem não encontrada: {image_path}. Verifique o caminho do arquivo.")
+        st.warning(f"Imagem não encontrada: {image_path}. Verifique o caminho do arquivo.")
 
-# Função para obter a cotação mais recente do widget do CEPEA e atualizar o histórico
-@st.cache_data(ttl=300)  # Atualiza a cada 5 minutos (300 segundos)
-def fetch_arroba_data():
-    # Carregar diretamente o CSV histórico, sem tentar ler o Excel
-    csv_file = "cotacao_historica.csv"
-    if not os.path.exists(csv_file):
-        # Se o CSV não existir, criar dados simulados
-        end_date = datetime(2025, 5, 16)
-        start_date = pd.to_datetime("2020-01-01")
-        dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        np.random.seed(42)
-        base_price = 280
-        trend = np.linspace(0, 50, len(dates))  # Tendência de alta ao longo dos anos
-        noise = np.random.normal(0, 5, len(dates))
-        prices = base_price + trend + noise
-        # Arredondar os valores simulados para números inteiros
-        prices = np.round(prices).astype(int)
-        df = pd.DataFrame({
-            "Data": dates,
-            "Cotação (R$/arroba)": prices
-        })
-        df.to_csv(csv_file, index=False)
-    else:
-        df = pd.read_csv(csv_file)
-        df["Data"] = pd.to_datetime(df["Data"])
-        # Garantir que os valores no CSV já existente sejam inteiros
-        df["Cotação (R$/arroba)"] = df["Cotação (R$/arroba)"].round(0).astype(int)
+# --- LÓGICA DE DADOS ---
+
+def get_live_price():
+    """
+    Obtém a cotação mais recente de forma independente.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    
+    try:
+        widget_url = "https://www.cepea.org.br/br/widgetproduto.js.php?id_indicador%5B%5D=2"
+        response = requests.get(widget_url, headers=headers, timeout=7)
+        response.raise_for_status()
+        content = response.text
+        
+        date_match = re.search(r"<td>(\d{2}/\d{2}/\d{4})</td>", content)
+        price_match = re.search(r'R\$ <span class="maior">([\d,]+)</span>', content)
+
+        if date_match and price_match:
+            date_str = date_match.group(1)
+            price_str = price_match.group(1).replace(",", ".")
+            price = float(price_str)
+            st.toast("Cotação diária obtida via Widget.")
+            return date_str, price
+    except Exception:
+        pass
 
     try:
-        # URL do widget do CEPEA
-        widget_url = "https://www.cepea.org.br/br/widgetproduto.js.php?fonte=arial&tamanho=10&largura=400px&corfundo=dbd6b2&cortexto=333333&corlinha=ede7bf&id_indicador%5B%5D=2"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        response = requests.get(widget_url, headers=headers)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=5)
+        start_str, end_str = start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
+        api_url = f"https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_str}/{end_str}"
+        response = requests.get(api_url, headers=headers, timeout=7)
         response.raise_for_status()
+        data = response.json()
+        if data and data.get('result'):
+            latest_entry = data['result'][-1]
+            date = datetime.strptime(latest_entry['data'], "%Y-%m-%d %H:%M:%S")
+            price = float(latest_entry['valor'].replace(",", "."))
+            st.toast("Cotação diária obtida via API.")
+            return date.strftime('%d/%m/%Y'), price
+    except Exception:
+        pass
 
-        # Extrair a tabela HTML do JavaScript
-        content = response.text
-        table_match = re.search(r"<table.*?</table>", content, re.DOTALL)
-        if not table_match:
-            st.error("Não foi possível extrair a tabela do widget do CEPEA.")
-            return df, None, None
+    return None, None
 
-        table_html = table_match.group(0)
-        # Ajustar as expressões regulares para capturar a data e o preço
-        # Data: primeira célula do <tbody>
-        date_match = re.search(r"<tbody>.*?<td>(\d{2}/\d{2}/\d{4})</td>", table_html, re.DOTALL)
-        # Preço: terceira célula do <tbody>, dentro de <span class="maior">
-        price_match = re.search(r"<td>R\$ <span class=\"maior\">([\d,]+)</span></td>", table_html)
+@st.cache_data(ttl=3600)
+def load_and_update_historical_data():
+    """
+    Carrega os dados HISTÓRICOS de um ficheiro CSV local e tenta atualizá-los.
+    """
+    base_csv_file = "cotacao_historica_base.csv"
+    
+    if not os.path.exists(base_csv_file):
+        st.error(f"Ficheiro de dados base '{base_csv_file}' não encontrado!")
+        return None
+        
+    df_historico = pd.read_csv(base_csv_file)
+    df_historico["Data"] = pd.to_datetime(df_historico["Data"])
+    df_historico["Cotação (R$/arroba)"] = pd.to_numeric(df_historico["Cotação (R$/arroba)"])
+    
+    try:
+        last_local_date = df_historico['Data'].max()
+        start_date = last_local_date + timedelta(days=1)
+        end_date = datetime.now()
 
-        if not date_match or not price_match:
-            st.error("Não foi possível extrair a data ou o preço do widget do CEPEA.")
-            return df, None, None
+        if start_date.date() < end_date.date():
+            start_str = start_date.strftime('%Y-%m-%d')
+            end_str = end_date.strftime('%Y-%m-%d')
+            api_url = f"https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_str}/{end_str}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(api_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data and data.get('result'):
+                    api_df = pd.DataFrame(data['result'])
+                    api_df = api_df[['data', 'valor']]
+                    api_df.columns = ['Data', 'Cotação (R$/arroba)']
+                    api_df['Data'] = pd.to_datetime(api_df['Data'])
+                    api_df['Cotação (R$/arroba)'] = api_df['Cotação (R$/arroba)'].str.replace(',', '.').astype(float)
+                    df_historico = pd.concat([df_historico, api_df]).drop_duplicates(subset=['Data'], keep='last').sort_values("Data").reset_index(drop=True)
+                    df_historico.to_csv(base_csv_file, index=False)
+                    st.toast("Base de dados histórica atualizada.")
+    except Exception:
+        pass
 
-        date_str = date_match.group(1)  # Ex.: "15/05/2025"
-        price_str = price_match.group(1).replace(",", ".")  # Ex.: "308.00"
-        date = datetime.strptime(date_str, "%d/%m/%Y")
-        price = round(float(price_str))  # Arredondar para número inteiro
+    return df_historico
 
-        # Verificar se a data já existe no DataFrame
-        if date not in df["Data"].values:
-            # Adicionar a nova cotação
-            new_row = pd.DataFrame({"Data": [date], "Cotação (R$/arroba)": [price]})
-            df = pd.concat([df, new_row], ignore_index=True)
-            # Ordenar por data
-            df = df.sort_values("Data")
-            # Salvar no CSV
-            df.to_csv(csv_file, index=False)
 
-        return df, date_str, price
-
-    except Exception as e:
-        st.error(f"Erro ao buscar cotações do widget: {str(e)}")
-        return df, None, None
-
-# Função para converter taxa anual para mensal (MOVIDA PARA FORA DO ELSE)
 def annual_to_monthly_rate(annual_rate):
+    """Converte taxa de juros anual para mensal."""
     return (1 + annual_rate / 100) ** (1 / 12) - 1
 
-# Função para obter a tendência da Selic (projeções do Relatório Focus) (MOVIDA PARA FORA DO ELSE)
 def get_selic_trend(period_months):
-    months = [7, 19, 31, 43]  # Meses correspondentes a dez/2025, dez/2026, dez/2027, dez/2028 (a partir de maio/2025)
-    selic_values = [15.0, 12.5, 10.5, 10.0]
-    trend = []
-    for month in range(period_months + 1):
-        if month <= months[0]:
-            value = selic_values[0]
-        elif month >= months[-1]:
-            value = selic_values[-1]
-        else:
-            for i in range(len(months) - 1):
-                if months[i] <= month < months[i + 1]:
-                    t = (month - months[i]) / (months[i + 1] - months[i])
-                    value = selic_values[i] + t * (selic_values[i + 1] - selic_values[i])
-                    break
-            else: # If loop completes without break, it means month is between ranges
-                value = selic_values[-1] # Default to last known value if outside defined intervals but within overall period
-        trend.append(value)
-    return trend
+    """Gera uma tendência de Selic baseada em projeções."""
+    months_proj = [7, 19, 31, 43] 
+    selic_values_proj = [10.5, 9.5, 9.0, 8.5] 
+    
+    trend = np.interp(range(period_months + 1), months_proj, selic_values_proj, left=selic_values_proj[0], right=selic_values_proj[-1])
+    return trend.tolist()
 
-# Função para calcular o rendimento líquido da Selic (fixa) (MOVIDA PARA FORA DO ELSE)
 def calculate_selic_return(initial_investment, selic_rate, ir_rate, period_months):
+    """Calcula o retorno acumulado de um investimento na Selic."""
     selic_monthly_rate = annual_to_monthly_rate(selic_rate)
     ir_rate_decimal = ir_rate / 100
-    monthly_net_rate = selic_monthly_rate * (1 - ir_rate_decimal)
     values = []
     for month in range(period_months + 1):
-        future_value = initial_investment * (1 + monthly_net_rate) ** month
-        values.append(future_value)
+        gross_value = initial_investment * (1 + selic_monthly_rate) ** month
+        profit = gross_value - initial_investment
+        net_profit = profit * (1 - ir_rate_decimal)
+        net_value = initial_investment + net_profit
+        values.append(net_value)
     return values
 
+# --- INÍCIO DA INTERFACE DO STREAMLIT ---
 
-# Obter os dados da cotação e a cotação diária mais recente
-arroba_data, latest_date, latest_price = fetch_arroba_data()
+# Obter dados históricos para o gráfico
+arroba_data = load_and_update_historical_data()
 
-# Filtrar para os últimos 3 anos (dinâmico)
-current_date = datetime(2025, 5, 16)  # Data atual
-start_date = current_date - timedelta(days=3*365)  # 3 anos atrás (aproximadamente)
-arroba_data = arroba_data[arroba_data["Data"] >= start_date]
+# Obter cotação diária (independente)
+latest_date, latest_price = get_live_price()
 
-# Agregar os dados para cotações semanais (média da cotação por semana)
-arroba_data.set_index("Data", inplace=True)
-weekly_data = arroba_data.resample('W').mean().reset_index()
-# Preencher valores NaN com a média dos valores não nulos
-weekly_data["Cotação (R$/arroba)"] = weekly_data["Cotação (R$/arroba)"].fillna(weekly_data["Cotação (R$/arroba)"].mean())
-weekly_data["Cotação (R$/arroba)"] = weekly_data["Cotação (R$/arroba)"].round(0).astype(int)
+# Fallback para cotação diária se a busca online falhar
+if not latest_date and arroba_data is not None and not arroba_data.empty:
+    st.toast("Não foi possível obter cotação online. A usar o último valor do histórico.")
+    latest_row = arroba_data.iloc[-1]
+    latest_date = latest_row['Data'].strftime('%d/%m/%Y')
+    latest_price = float(latest_row['Cotação (R$/arroba)'])
 
-# Criar o gráfico da cotação da arroba do boi gordo (semanal, apenas linha)
-fig_arroba, ax_arroba = plt.subplots(figsize=(15, 4))  # Tamanho fixo para ambos os gráficos
-sns.lineplot(x="Data", y="Cotação (R$/arroba)", data=weekly_data, ax=ax_arroba)  # Apenas linha
-ax_arroba.set_title("Cotação da Arroba do Boi Gordo (Últimos 3 Anos)", fontsize=16)  # Título dentro do gráfico
-ax_arroba.set_xlabel("Data", fontsize=12)
-ax_arroba.set_ylabel("Cotação (R$/arroba)", fontsize=12)
-ax_arroba.grid(True)
-plt.xticks(rotation=45)
-plt.tight_layout()
 
-# Criar duas colunas: uma maior para os gráficos e tabela, outra menor para as logos
+# Preparar dados para o gráfico de cotação
+if arroba_data is not None and not arroba_data.empty:
+    end_date_filter = arroba_data["Data"].max()
+    start_date_filter = end_date_filter - timedelta(days=3*365)
+    arroba_data_filtered = arroba_data.loc[arroba_data["Data"] >= start_date_filter]
+
+    monthly_avg_data = arroba_data_filtered.set_index('Data')['Cotação (R$/arroba)'].resample('M').mean().reset_index()
+
+    fig_arroba = px.line(
+        monthly_avg_data,
+        x='Data',
+        y='Cotação (R$/arroba)',
+        title="Cotação Média Mensal da Arroba do Boi Gordo (Últimos 3 Anos)",
+        labels={'Data': 'Data', 'Cotação (R$/arroba)': 'Cotação Média (R$/arroba)'},
+        markers=True
+    )
+    
+    fig_arroba.update_traces(
+        line_color='#8B4513',
+        hovertemplate='<b>Data</b>: %{x|%B de %Y}<br><b>Cotação Média</b>: R$ %{y:.2f}'
+    )
+    
+    fig_arroba.update_layout(
+        title_x=0.5,
+        xaxis_title="Data",
+        yaxis_title="Cotação Média (R$/arroba)",
+        plot_bgcolor='rgba(255, 255, 255, 0.1)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font_color='white',
+        height=400
+    )
+    
+    # **NOVO**: Adiciona a marca d'água ao gráfico de cotação
+    fig_arroba.add_annotation(
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
+        text="OS CAPITAL",
+        showarrow=False,
+        font=dict(
+            size=50,
+            color="green"
+        ),
+        opacity=0.15
+    )
+    
+    fig_arroba.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)')
+    fig_arroba.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.2)')
+
+else:
+    fig_arroba = None
+
+
+# --- LAYOUT DA PÁGINA ---
+
 col_main, col_logos = st.columns([3, 1])
 
 with col_main:
-    # Exibir a cotação diária abaixo do gráfico, com destaque e crédito ao CEPEA
     if latest_date and latest_price:
         st.markdown(
-            f"<p style='font-size: 1.2rem; color: #8B4513;'><span style='font-size: 1.2rem; color: #8B4513;'>Cotação Diária: {latest_date} - R$ {latest_price}</span> <span style='font-size: 0.9rem; color: #FFFFFF;'>- cotação disponibilizada pela empresa <a href='https://www.cepea.org.br/br' target='_blank' style='color: #FFFFFF; text-decoration: underline;'>CEPEA</a></span></p>",
+            f"""<div style='text-align: center; margin-bottom: 1rem;'>
+                   <span style='font-size: 1.5rem; color: #8B4513; font-weight: bold;'>Cotação Diária: {latest_date} - R$ {latest_price:.2f}</span>
+                   <span style='font-size: 0.9rem;'> | Fonte: <a href='https://www.cepea.org.br/br' target='_blank'>CEPEA</a></span>
+               </div>""",
             unsafe_allow_html=True
         )
 
-    # Exibir o gráfico da cotação (o título agora está dentro do gráfico)
-    st.pyplot(fig_arroba)
+    if fig_arroba:
+        st.plotly_chart(fig_arroba, use_container_width=True)
+    elif arroba_data is None:
+         st.error("Não foi possível carregar os dados históricos para exibir o gráfico.")
 
-# Barra lateral com parâmetros ajustáveis (valores padrão ajustados para 1)
-st.sidebar.header("Parâmetros")
-selic_rate = st.sidebar.slider("Taxa Selic (% ao ano)", min_value=0.0, max_value=20.0, value=1.0, step=0.25)
-period_months = st.sidebar.slider("Período de Análise (meses)", min_value=1, max_value=36, value=1)
-initial_investment = st.sidebar.number_input("Investimento Inicial (R$)", min_value=0.0, value=1.0, step=1000.0)
-num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=0.0, value=1.0, step=1.0)
 
-# Cálculo e exibição da Quantidade Total de Arrobas Compradas logo após o filtro de cabeças
-buy_arroba_price = st.sidebar.number_input("Preço da Arroba na Compra (R$/arroba)", min_value=0.0, value=1.0, step=1.0)
-if buy_arroba_price > 0:
-    total_arrobas_bought = initial_investment / buy_arroba_price
-    st.sidebar.text(f"Quantidade Total de Arrobas Compradas: {total_arrobas_bought:.2f}")
-else:
-    total_arrobas_bought = 0
-    st.sidebar.text("Quantidade Total de Arrobas Compradas: 0.00")
+# --- BARRA LATERAL (INPUTS DO USUÁRIO) ---
 
-# Outros parâmetros
-sell_arroba_price = st.sidebar.number_input("Preço da Arroba na Venda (R$/arroba)", min_value=0.0, value=1.0, step=1.0)
-arrobas_gain_period = st.sidebar.number_input("Ganhos de Arrobas no Período", min_value=0.0, value=1.0, step=10.0)
+st.sidebar.header("Parâmetros da Simulação")
+initial_investment = st.sidebar.number_input("Investimento Inicial (R$)", min_value=1.0, value=100000.0, step=1000.0)
+num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=1, value=50, step=1)
+period_months = st.sidebar.slider("Período de Análise (meses)", min_value=1, max_value=48, value=12)
 
-# Filtro de Custo Médio por Cabeça
-cost_per_head_feed = st.sidebar.number_input("Custo Médio Mensal por Cabeça (Alimentação) (R$/cabeça)", min_value=0.0, value=1.0, step=1.0)
+st.sidebar.markdown("---")
 
-fixed_costs = st.sidebar.number_input("Custos Fixos (R$)", min_value=0.0, value=1.0, step=100.0)
+default_buy_price = latest_price if latest_price else 290.0
+buy_arroba_price = st.sidebar.number_input("Preço da Arroba na Compra (R$/arroba)", min_value=1.0, value=default_buy_price, step=0.01, format="%.2f")
+sell_arroba_price = st.sidebar.number_input("Preço da Arroba na Venda (R$/arroba)", min_value=1.0, value=default_buy_price + 10, step=0.01, format="%.2f")
+arrobas_gain_period = st.sidebar.number_input("Ganho de Arrobas por Cabeça no Período", min_value=0.0, value=7.0, step=0.5)
 
-# Determinar a alíquota de IR com base no período de análise
+st.sidebar.markdown("---")
+
+cost_per_head_feed = st.sidebar.number_input("Custo Mensal por Cabeça (Alimentação, etc.) (R$)", min_value=0.0, value=80.0, step=5.0)
+fixed_costs = st.sidebar.number_input("Outros Custos Fixos no Período (R$)", min_value=0.0, value=5000.0, step=100.0)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Parâmetros da Aplicação")
+selic_rate = st.sidebar.slider("Taxa Selic (% ao ano)", min_value=0.0, max_value=20.0, value=10.5, step=0.25)
+
 period_days = period_months * 30
-if period_days <= 180:
-    default_ir_rate = 22.5
-elif 181 <= period_days <= 360:
-    default_ir_rate = 20.0
-elif 361 <= period_days <= 720:
-    default_ir_rate = 17.5
-else:
-    default_ir_rate = 15.0
+if period_days <= 180: default_ir_rate = 22.5
+elif 181 <= period_days <= 360: default_ir_rate = 20.0
+elif 361 <= period_days <= 720: default_ir_rate = 17.5
+else: default_ir_rate = 15.0
 
 ir_rate_options = [22.5, 20.0, 17.5, 15.0]
 ir_rate_index = ir_rate_options.index(default_ir_rate)
 ir_rate = st.sidebar.selectbox("Alíquota de IR na Aplicação (%)", options=ir_rate_options, index=ir_rate_index)
 
-# Validação dos campos obrigatórios
-if initial_investment <= 0 or buy_arroba_price <= 0 or sell_arroba_price <= 0:
-    st.error("Por favor, preencha os campos 'Investimento Inicial', 'Preço da Arroba na Compra' e 'Preço da Arroba na Venda' com valores maiores que 0.")
+if initial_investment <= 0 or buy_arroba_price <= 0 or sell_arroba_price <= 0 or num_heads_bought <= 0:
+    with col_main:
+        st.error("Por favor, preencha os campos de investimento, preços e quantidade de cabeças com valores maiores que 0.")
 else:
-    # Cálculo do Lucro Total da Operação
-    total_arrobas_sold = total_arrobas_bought + arrobas_gain_period
+    # --- CÁLCULOS PRINCIPAIS ---
+    total_arrobas_bought = initial_investment / buy_arroba_price
+    total_arrobas_gain = num_heads_bought * arrobas_gain_period
+    total_arrobas_sold = total_arrobas_bought + total_arrobas_gain
     total_revenue = total_arrobas_sold * sell_arroba_price
     
-    # Cálculo do custo de alimentação por cabeça
     feed_cost = cost_per_head_feed * num_heads_bought * period_months
     total_costs = initial_investment + fixed_costs + feed_cost
-    total_profit = total_revenue - total_costs
+    total_profit_gado = total_revenue - total_costs
+    
+    gado_values = np.linspace(initial_investment, initial_investment + total_profit_gado, period_months + 1).tolist()
 
-    # Calcular o lucro mensal médio para distribuição ao longo do período
-    monthly_profit = total_profit / period_months
-
-    # Obter tendência da Selic
-    selic_trend = get_selic_trend(period_months)
-
-    # Cálculo para a aplicação Selic (fixa)
     selic_values = calculate_selic_return(initial_investment, selic_rate, ir_rate, period_months)
+    selic_profit = selic_values[-1] - initial_investment
 
-    # Para a produção de gado, acumular o lucro mensalmente
-    gado_values = []
-    current_value = initial_investment
-    gado_values.append(current_value)
-    for month in range(period_months):
-        current_value += monthly_profit
-        gado_values.append(current_value)
-
-    # DataFrame para o gráfico (sem a Selic com tendência)
     months = list(range(period_months + 1))
-    df = pd.DataFrame({
+    df_comparison = pd.DataFrame({
         "Mês": months,
         "Produção de Gado (R$ Nominais)": gado_values,
-        "Aplicação Selic (fixa) (R$ Nominais)": selic_values
+        "Aplicação Selic (R$ Nominais)": selic_values
     })
 
-    # Calcular a TIR mensal para Selic
-    selic_cash_flow = [-initial_investment] + [0] * (period_months - 1) + [selic_values[-1]]
-    selic_irr_monthly = npf.irr(selic_cash_flow)
-    selic_irr_monthly_pct = selic_irr_monthly * 100 if selic_irr_monthly is not None and not np.isnan(selic_irr_monthly) else None
-
-    # Calcular a TIR mensal para Produção de Gado
-    gado_cash_flow = [-initial_investment] + [0] * (period_months - 1) + [initial_investment + total_profit]
+    gado_cash_flow = [-initial_investment] + [0] * (period_months - 1) + [initial_investment + total_profit_gado]
     gado_irr_monthly = npf.irr(gado_cash_flow)
-    gado_irr_monthly_pct = gado_irr_monthly * 100 if gado_irr_monthly is not None and not np.isnan(gado_irr_monthly) else None
+    gado_irr_monthly_pct = gado_irr_monthly * 100 if gado_irr_monthly is not None and not np.isnan(gado_irr_monthly) else 0
 
-    # Gráfico da Produção de Gado x Selic (apenas linha, mesma largura)
-    fig, ax1 = plt.subplots(figsize=(15, 6))  # Mesma largura do gráfico anterior
+    selic_cash_flow = [-initial_investment] + [0] * (period_months - 1) + [initial_investment + selic_profit]
+    selic_irr_monthly = npf.irr(selic_cash_flow)
+    selic_irr_monthly_pct = selic_irr_monthly * 100 if selic_irr_monthly is not None and not np.isnan(selic_irr_monthly) else 0
 
-    # Plotar valores acumulados (R$) no eixo y primário (apenas linha)
-    sns.lineplot(x="Mês", y="Produção de Gado (R$ Nominais)", data=df, label="Produção de Gado", ax=ax1)
-    sns.lineplot(x="Mês", y="Aplicação Selic (fixa) (R$ Nominais)", data=df, label="Aplicação Selic (fixa)", ax=ax1)
-
-    # Criar eixo y secundário para a taxa Selic (%) (apenas linha)
-    ax2 = ax1.twinx()
-    ax2.plot(months, selic_trend, label="Taxa Selic Projetada (%)", linestyle='--', color='red')
-    ax2.set_ylabel("Taxa Selic (% ao ano)", fontsize=12)
-
-    # Configurar rótulos e legenda
-    ax1.set_xlabel("Mês\nElaborado por: OS CAPITAL", fontsize=12)
-    ax1.set_ylabel("Valor (R$ Nominais)", fontsize=12)
-    ax1.grid(True)
-
-    # Título do gráfico
-    ax1.set_title("Produção de Gado x Selic", fontsize=16)
-
-    # Adicionar marca d'água
-    ax1.text(0.5, 0.5, "OS CAPITAL", fontsize=40, color='green', alpha=0.2, ha='center', va='center', transform=ax1.transAxes)
-
-    # Combinar legendas dos dois eixos
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
-
-    # Ajustar layout para evitar sobreposição
-    plt.tight_layout()
-
+    # --- GRÁFICO COMPARATIVO E TABELA DE RESULTADOS ---
     with col_main:
-        # Exibir o segundo gráfico (Produção de Gado x Selic)
-        st.pyplot(fig)
+        st.markdown("---")
+        fig_comp, ax1 = plt.subplots(figsize=(15, 6))
 
-        # Calcular métricas para a tabela
-        selic_profit = selic_values[-1] - initial_investment  # Lucro com Selic (fixa)
-        gain_from_arrobas = arrobas_gain_period * sell_arroba_price  # Ganho com aumento de arrobas
-        price_difference_profit = (sell_arroba_price - buy_arroba_price) * total_arrobas_bought  # Lucro/prejuízo com diferença de preço
-        total_cost = fixed_costs + feed_cost  # Custo total (fixo + alimentação)
+        sns.lineplot(x="Mês", y="Produção de Gado (R$ Nominais)", data=df_comparison, label="Produção de Gado", ax=ax1, linewidth=2.5)
+        sns.lineplot(x="Mês", y="Aplicação Selic (R$ Nominais)", data=df_comparison, label=f"Aplicação Selic ({selic_rate}%)", ax=ax1, linewidth=2.5)
 
-        # Criar a tabela de lucros com TIR mensal
-        st.subheader("Resumo de Lucros")
+        ax1.set_xlabel("Mês\nElaborado por: OS CAPITAL", fontsize=12)
+        ax1.set_ylabel("Valor Acumulado (R$)", fontsize=12)
+        ax1.grid(True, linestyle='--', alpha=0.6)
+        ax1.set_title("Comparativo de Investimentos: Produção de Gado x Selic", fontsize=16)
+        
+        ax1.text(0.5, 0.5, "OS CAPITAL", fontsize=50, color='gray', alpha=0.15, ha='center', va='center', transform=ax1.transAxes)
+        
+        selic_trend = get_selic_trend(period_months)
+        ax2 = ax1.twinx()
+        ax2.plot(months, selic_trend, label="Taxa Selic Projetada (%)", linestyle='--', color='red', alpha=0.7)
+        ax2.set_ylabel("Taxa Selic Projetada (% ao ano)", fontsize=12)
+        
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+
+        plt.tight_layout()
+        st.pyplot(fig_comp)
+
+        st.subheader("Resumo da Operação")
+        
+        gain_from_arrobas = total_arrobas_gain * sell_arroba_price
+        price_difference_profit = (sell_arroba_price - buy_arroba_price) * total_arrobas_bought
+        total_op_cost = fixed_costs + feed_cost
+
         table_data = {
             "Métrica": [
-                "Lucro com Selic (fixa) (R$)",
+                "<b>Lucro Total com Produção de Gado (R$)</b>",
+                "Lucro Total com Selic (R$)",
+                "TIR Mensal - Gado (%)",
+                "TIR Mensal - Selic (%)",
+                "--- Detalhamento do Gado ---",
                 "Ganho com Aumento de Arrobas (R$)",
-                "Lucro/Prejuízo com Diferença de Preço (R$)",
-                "Custo Total (R$)",
-                "Lucro Total com Produção de Gado (R$)"
+                "Ganho/Perda com Diferença de Preço (R$)",
+                "Custo Operacional Total (R$)",
             ],
             "Valor": [
-                f"{selic_profit:.2f}",
-                f"{gain_from_arrobas:.2f}",
-                f"{price_difference_profit:.2f}",
-                f"{total_cost:.2f}",
-                f"{total_profit:.2f}"
-            ],
-            "TIR Mensal (%)": [
-                f"{selic_irr_monthly_pct:.2f}" if selic_irr_monthly_pct is not None else "N/A",
-                "N/A",
-                "N/A",
-                "N/A",
-                f"{gado_irr_monthly_pct:.2f}" if gado_irr_monthly_pct is not None else "N/A"
+                f"<b>R$ {total_profit_gado:,.2f}</b>",
+                f"R$ {selic_profit:,.2f}",
+                f"{gado_irr_monthly_pct:.2f}%",
+                f"{selic_irr_monthly_pct:.2f}%",
+                "",
+                f"R$ {gain_from_arrobas:,.2f}",
+                f"R$ {price_difference_profit:,.2f}",
+                f"- R$ {total_op_cost:,.2f}",
             ]
         }
-        # Ajustar a largura da tabela para ser igual à dos gráficos
-        st.markdown(
-            """
-            <style>
-            .stTable {width: 100% !important; max-width: 100% !important;}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        st.table(table_data)
+        
+        df_table = pd.DataFrame(table_data)
+        st.markdown(df_table.to_html(escape=False, index=False), unsafe_allow_html=True)
 
-# Exibir as logos na coluna da direita com ajustes
+
+# --- COLUNA DE LOGOS ---
 with col_logos:
-    # Aumentar o tamanho da fonte dos textos das logos
-    st.markdown(
-        """
-        <style>
-        .logo-text {font-size: 1.2rem !important;}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size: 1.2rem; text-align: center;'><b>OS CAPITAL</b></p>", unsafe_allow_html=True)
+    display_linked_image("assets/oscapital.jpeg", "https://oscapitaloficial.com.br/", "<p style='font-size: 1rem; text-align: center;'>VISITE NOSSO SITE</p>", 200)
     
-    st.markdown("<p class='logo-text'><b>OS CAPITAL</b></p>", unsafe_allow_html=True)
-    display_linked_image("assets/oscapital.jpeg", "https://oscapitaloficial.com.br/", "<p class='logo-text'>VISITE NOSSO SITE</p>", 200)
+    st.markdown("---")
     
-    st.markdown("<p class='logo-text'><b>Interactive Brokers</b></p>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size: 1.2rem; text-align: center;'><b>Interactive Brokers</b></p>", unsafe_allow_html=True)
     display_linked_image(
         "assets/IB_logo_stacked1.jpg",
         "https://ibkr.com/referral/edgleison239",
-        "<p class='logo-text'>INVISTA EM MAIS DE 160<br>MERCADOS EM TODO O<br>MUNDO</p>",
+        "<p style='font-size: 1rem; text-align: center;'>INVISTA EM MAIS DE 160<br>MERCADOS EM TODO O<br>MUNDO</p>",
         200
     )
