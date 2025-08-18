@@ -1,4 +1,4 @@
-name: Update Cattle Price Data Daily
+ame: Update Cattle Price Data Daily
 
 on:
   schedule:
@@ -26,5 +26,5 @@ jobs:
       - name: Run data update script
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
-        # **CORREÇÃO DEFINITIVA**: Usa o caminho absoluto para o script
-        run: python ${{ github.workspace }}/update_firestore.py
+        # **CORREÇÃO FINAL**: Executa o script a partir da pasta principal
+        run: python update_firestore.py
