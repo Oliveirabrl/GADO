@@ -9,7 +9,10 @@ import base64
 from datetime import datetime, timedelta
 import requests
 import re
-import plotly.express as px # Importa a biblioteca Plotly
+import plotly.express as px
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
 
 # Ajustar o layout para "wide" e maximizar o uso do espaço
 st.set_page_config(layout="wide")
@@ -44,90 +47,57 @@ def display_linked_image(image_path, url, caption, width):
 
 # --- LÓGICA DE DADOS ---
 
-def get_live_price():
-    """
-    Obtém a cotação mais recente de forma independente.
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    
+@st.cache_resource(ttl=600) # Cache da conexão por 10 minutos
+def initialize_firestore():
+    """Inicializa a conexão com o Firestore, corrigindo a private_key."""
     try:
-        widget_url = "https://www.cepea.org.br/br/widgetproduto.js.php?id_indicador%5B%5D=2"
-        response = requests.get(widget_url, headers=headers, timeout=7)
-        response.raise_for_status()
-        content = response.text
+        # Converte o objeto de segredos para um dicionário Python normal
+        creds_dict = st.secrets["firebase"].to_dict()
         
-        date_match = re.search(r"<td>(\d{2}/\d{2}/\d{4})</td>", content)
-        price_match = re.search(r'R\$ <span class="maior">([\d,]+)</span>', content)
-
-        if date_match and price_match:
-            date_str = date_match.group(1)
-            price_str = price_match.group(1).replace(",", ".")
-            price = float(price_str)
-            st.toast("Cotação diária obtida via Widget.")
-            return date_str, price
-    except Exception:
-        pass
-
-    try:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=5)
-        start_str, end_str = start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
-        api_url = f"https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_str}/{end_str}"
-        response = requests.get(api_url, headers=headers, timeout=7)
-        response.raise_for_status()
-        data = response.json()
-        if data and data.get('result'):
-            latest_entry = data['result'][-1]
-            date = datetime.strptime(latest_entry['data'], "%Y-%m-%d %H:%M:%S")
-            price = float(latest_entry['valor'].replace(",", "."))
-            st.toast("Cotação diária obtida via API.")
-            return date.strftime('%d/%m/%Y'), price
-    except Exception:
-        pass
-
-    return None, None
-
-@st.cache_data(ttl=3600)
-def load_and_update_historical_data():
-    """
-    Carrega os dados HISTÓRICOS de um ficheiro CSV local e tenta atualizá-los.
-    """
-    base_csv_file = "cotacao_historica_base.csv"
-    
-    if not os.path.exists(base_csv_file):
-        st.error(f"Ficheiro de dados base '{base_csv_file}' não encontrado!")
+        # **CORREÇÃO DEFINITIVA**: Substitui os caracteres de escape '\\n' por quebras de linha reais '\n'
+        creds_dict['private_key'] = creds_dict['private_key'].replace('\\n', '\n')
+        
+        cred = credentials.Certificate(creds_dict)
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
+    except Exception as e:
+        st.error(f"Erro ao inicializar o Firebase: {e}")
+        st.error("Verifique se o ficheiro .streamlit/secrets.toml está configurado corretamente.")
         return None
-        
-    df_historico = pd.read_csv(base_csv_file)
-    df_historico["Data"] = pd.to_datetime(df_historico["Data"])
-    df_historico["Cotação (R$/arroba)"] = pd.to_numeric(df_historico["Cotação (R$/arroba)"])
-    
+
+
+@st.cache_data(ttl=600) # Cache dos dados por 10 minutos
+def load_data_from_firestore():
+    """Carrega todos os dados de cotação do Firestore."""
     try:
-        last_local_date = df_historico['Data'].max()
-        start_date = last_local_date + timedelta(days=1)
-        end_date = datetime.now()
+        db = initialize_firestore()
+        if db is None:
+            return None, None, None
+            
+        collection_ref = db.collection("cotacoes")
+        docs = collection_ref.stream()
+        
+        data = [doc.to_dict() for doc in docs]
+        
+        if not data:
+            st.warning("A base de dados de cotações está vazia. O robô de atualização precisa de ser executado no GitHub.")
+            return None, None, None
 
-        if start_date.date() < end_date.date():
-            start_str = start_date.strftime('%Y-%m-%d')
-            end_str = end_date.strftime('%Y-%m-%d')
-            api_url = f"https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_str}/{end_str}"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(api_url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data and data.get('result'):
-                    api_df = pd.DataFrame(data['result'])
-                    api_df = api_df[['data', 'valor']]
-                    api_df.columns = ['Data', 'Cotação (R$/arroba)']
-                    api_df['Data'] = pd.to_datetime(api_df['Data'])
-                    api_df['Cotação (R$/arroba)'] = api_df['Cotação (R$/arroba)'].str.replace(',', '.').astype(float)
-                    df_historico = pd.concat([df_historico, api_df]).drop_duplicates(subset=['Data'], keep='last').sort_values("Data").reset_index(drop=True)
-                    df_historico.to_csv(base_csv_file, index=False)
-                    st.toast("Base de dados histórica atualizada.")
-    except Exception:
-        pass
-
-    return df_historico
+        df = pd.DataFrame(data)
+        df['Data'] = pd.to_datetime(df['Data'])
+        df = df.sort_values("Data").reset_index(drop=True)
+        
+        latest_row = df.iloc[-1]
+        latest_date = latest_row['Data'].strftime('%d/%m/%Y')
+        latest_price = float(latest_row['Cotação (R$/arroba)'])
+        
+        return df, latest_date, latest_price
+    except Exception as e:
+        st.error(f"Erro ao carregar dados do Firestore: {e}")
+        return None, None, None
 
 
 def annual_to_monthly_rate(annual_rate):
@@ -157,19 +127,8 @@ def calculate_selic_return(initial_investment, selic_rate, ir_rate, period_month
 
 # --- INÍCIO DA INTERFACE DO STREAMLIT ---
 
-# Obter dados históricos para o gráfico
-arroba_data = load_and_update_historical_data()
-
-# Obter cotação diária (independente)
-latest_date, latest_price = get_live_price()
-
-# Fallback para cotação diária se a busca online falhar
-if not latest_date and arroba_data is not None and not arroba_data.empty:
-    st.toast("Não foi possível obter cotação online. A usar o último valor do histórico.")
-    latest_row = arroba_data.iloc[-1]
-    latest_date = latest_row['Data'].strftime('%d/%m/%Y')
-    latest_price = float(latest_row['Cotação (R$/arroba)'])
-
+# Obter dados do Firestore
+arroba_data, latest_date, latest_price = load_data_from_firestore()
 
 # Preparar dados para o gráfico de cotação
 if arroba_data is not None and not arroba_data.empty:
@@ -210,10 +169,7 @@ if arroba_data is not None and not arroba_data.empty:
         yref="paper",
         text="OS CAPITAL",
         showarrow=False,
-        font=dict(
-            size=50,
-            color="green"
-        ),
+        font=dict(size=50, color="green"),
         opacity=0.15
     )
     
@@ -248,7 +204,6 @@ with col_main:
 
 st.sidebar.header("Parâmetros da Simulação")
 initial_investment = st.sidebar.number_input("Investimento Inicial (R$)", min_value=1.0, value=100000.0, step=1000.0)
-# **LAYOUT ATUALIZADO**: Custo de capital movido para baixo do investimento inicial
 cost_of_capital_rate = st.sidebar.number_input("Custo de Capital (% ao ano)", min_value=0.0, value=0.0, step=0.5, format="%.2f")
 num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=1, value=50, step=1)
 period_months = st.sidebar.slider("Período de Análise (meses)", min_value=1, max_value=48, value=12)
