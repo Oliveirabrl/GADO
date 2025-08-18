@@ -18,16 +18,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      # --- PASSO DE DIAGNÓSTICO ---
-      - name: List files in the repository
-        run: ls -R
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run data update script
+      - name: Find and run the data update script
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: python update_firestore.py
+        run: |
+          # Procura pelo script em qualquer pasta
+          SCRIPT_PATH=$(find . -name "update_firestore.py")
+          
+          # Verifica se o script foi encontrado
+          if [ -z "$SCRIPT_PATH" ]; then
+            echo "ERRO: O ficheiro update_firestore.py não foi encontrado no repositório!"
+            exit 1
+          fi
+          
+          # Executa o script a partir do caminho encontrado
+          echo "A executar o script encontrado em: $SCRIPT_PATH"
+          python "$SCRIPT_PATH"
