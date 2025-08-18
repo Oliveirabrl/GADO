@@ -23,19 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Find and run the data update script
+      - name: Run data update script
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: |
-          # Procura pelo script em qualquer pasta
-          SCRIPT_PATH=$(find . -name "update_firestore.py")
-          
-          # Verifica se o script foi encontrado
-          if [ -z "$SCRIPT_PATH" ]; then
-            echo "ERRO: O ficheiro update_firestore.py não foi encontrado no repositório!"
-            exit 1
-          fi
-          
-          # Executa o script a partir do caminho encontrado
-          echo "A executar o script encontrado em: $SCRIPT_PATH"
-          python "$SCRIPT_PATH"
+          SCRAPINGBEE_API_KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
+        run: python update_firestore.py

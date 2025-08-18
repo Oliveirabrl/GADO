@@ -5,10 +5,12 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 import json
+import urllib.parse
 
 # --- Configuração ---
 COLLECTION_NAME = "cotacoes"
-API_URL_TEMPLATE = "https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_date}/{end_date}"
+# O URL da API do CEPEA que queremos aceder
+CEPEA_API_URL_TEMPLATE = "https://www.cepea.org.br/api/indicador/dados/id/2/d/{start_date}/{end_date}"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
 
 def initialize_firestore():
@@ -19,14 +21,22 @@ def initialize_firestore():
     
     creds_dict = json.loads(creds_json_str)
     cred = credentials.Certificate(creds_dict)
-    firebase_admin.initialize_app(cred)
+    
+    # Evita reinicializar a app se já estiver iniciada
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+        
     return firestore.client()
 
 def update_firestore_data():
-    """Busca os dados mais recentes da API e os salva no Firestore."""
+    """Busca os dados mais recentes da API através do ScrapingBee e os salva no Firestore."""
     print("A iniciar a atualização de dados para o Firestore...")
     db = initialize_firestore()
     
+    scrapingbee_api_key = os.getenv('SCRAPINGBEE_API_KEY')
+    if not scrapingbee_api_key:
+        raise ValueError("A variável de ambiente SCRAPINGBEE_API_KEY não está definida.")
+
     try:
         query = db.collection(COLLECTION_NAME).order_by("Data", direction=firestore.Query.DESCENDING).limit(1)
         last_doc = next(query.stream(), None)
@@ -44,8 +54,13 @@ def update_firestore_data():
 
         print(f"A procurar novos dados de {start_str} até {end_str}...")
 
-        api_url = API_URL_TEMPLATE.format(start_date=start_str, end_date=end_str)
-        response = requests.get(api_url, headers=HEADERS, timeout=20)
+        # 1. Monta o URL do CEPEA
+        cepea_url = CEPEA_API_URL_TEMPLATE.format(start_date=start_str, end_date=end_str)
+        
+        # 2. Monta o URL final para o ScrapingBee, que irá aceder ao URL do CEPEA por nós
+        scrapingbee_url = f"https://app.scrapingbee.com/api/v1/?api_key={scrapingbee_api_key}&url={urllib.parse.quote(cepea_url)}"
+
+        response = requests.get(scrapingbee_url, headers=HEADERS, timeout=60) # Aumenta o timeout
         response.raise_for_status()
         data = response.json()
 
