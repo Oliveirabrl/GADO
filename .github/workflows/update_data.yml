@@ -26,5 +26,5 @@ jobs:
       - name: Run data update script
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS }}
-        # **CORREÇÃO DEFINITIVA**: Aponta para o caminho correto do script
-        run: python update_firestore.py
+        # **CORREÇÃO DEFINITIVA**: Usa o caminho absoluto para o script
+        run: python ${{ github.workspace }}/update_firestore.py
