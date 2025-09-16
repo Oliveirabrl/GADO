@@ -134,6 +134,12 @@ with col_main:
             st.markdown("### 1. Análise Estratégica de Mercado")
 
             # GRÁFICO 1: EXPORTAÇÃO VS. PREÇO DA ARROBA
+            with st.expander("Ver explicação do Gráfico de Exportação"):
+                st.markdown("""
+                Este gráfico contextualiza o mercado, mostrando a relação entre o **volume de carne bovina exportada pelo Brasil (barras)** e o **preço da arroba no mercado interno (linha amarela)**.
+                - **Interpretação:** Geralmente, altos volumes de exportação podem aumentar a demanda total por gado, exercendo pressão de alta sobre os preços internos.
+                - **Cores:** As barras verdes indicam que a exportação do mês foi **maior** que a do mesmo mês no ano anterior, enquanto as vermelhas indicam que foi **menor**.
+                """)
             df_merged['KG'] = df_merged['kg_liquido']
             df_merged['KG_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['KG'].shift(1)
             conditions_export = [df_merged['KG'] > df_merged['KG_Anterior'], df_merged['KG'] < df_merged['KG_Anterior']]
@@ -149,8 +155,13 @@ with col_main:
 
             # GRÁFICO DE SAZONALIDADE
             st.markdown("---")
+            with st.expander("Ver explicação do Gráfico de Sazonalidade"):
+                st.markdown("""
+                Este gráfico ajuda no **planejamento de longo prazo**, mostrando o comportamento médio dos custos e preços para cada mês do ano (de 2015 até hoje).
+                - **Interpretação:** Ajuda a identificar padrões sazonais, como a **entressafra** (tipicamente no segundo semestre), onde os preços da arroba (linha amarela) historicamente tendem a ser mais altos.
+                - **Estratégia:** O ideal é planejar o ciclo de engorda para que a venda dos animais coincida com os meses de preços historicamente mais altos.
+                """)
             df_merged['mes'] = df_merged['Data'].dt.month
-            # Calcula um custo base para a sazonalidade, usando os parâmetros padrão
             custo_producao_base = calcular_custo_alimentacao(df_merged, 11.0, 80, 6.5, 85.0) + df_merged['preco_bezerro_brl']
             df_merged['custo_producao_base'] = custo_producao_base
             df_sazonal = df_merged.groupby('mes')[['preco_brl_arroba', 'custo_producao_base']].mean().reset_index()
@@ -182,6 +193,12 @@ with col_main:
             with col_eff2:
                 pct_concentrado_input = st.number_input("% de Concentrado na Dieta", min_value=50.0, max_value=100.0, value=85.0, step=1.0, help="Percentual da dieta total que é composta por concentrado (milho/soja).")
 
+            with st.expander("Ver explicação do Gráfico de Custo vs. Receita"):
+                st.markdown("""
+                Este é o **simulador principal**. Ele compara o `Custo de Produção por Cabeça` (barras) com a `Receita Estimada por Cabeça` (linha amarela), ambos na mesma escala (R$).
+                - **Interpretação:** É a visualização direta da lucratividade da operação, baseada nos parâmetros que você define acima.
+                - **Cores:** As barras **azuis** indicam meses onde a receita superou o custo (lucro), enquanto as barras **vermelhas** indicam o contrário (prejuízo).
+                """)
             custo_alimentacao = calcular_custo_alimentacao(df_merged, arrobas_gain_head, percent_milho, conversao_alimentar_input, pct_concentrado_input)
             df_merged['custo_producao'] = custo_alimentacao + df_merged['preco_bezerro_brl']
             
@@ -203,6 +220,12 @@ with col_main:
             st.markdown("---")
             st.markdown("### 3. Ferramentas de Timing (Compra e Venda)")
 
+            with st.expander("Ver explicação do Gráfico de Relação de Troca (Sinal de Compra)"):
+                st.markdown("""
+                Esta é uma ferramenta para identificar bons momentos de **compra**.
+                - **Interpretação:** A linha amarela mostra a relação de troca (quantas @ de boi gordo são necessárias para comprar um bezerro). Quando a linha está **acima da média histórica** (tracejada), seu poder de compra é alto, indicando um momento favorável para adquirir animais de reposição.
+                - **Contexto:** As barras mostram o preço absoluto do bezerro.
+                """)
             df_merged['Bezerro_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['preco_bezerro_brl'].shift(1)
             conditions_bezerro = [df_merged['preco_bezerro_brl'] < df_merged['Bezerro_Anterior']]
             choices_bezerro = ['pink']
@@ -218,6 +241,12 @@ with col_main:
             st.plotly_chart(fig_bezerro, use_container_width=True)
 
             st.markdown("---")
+            with st.expander("Ver explicação do Gráfico de Reversão da Margem (Sinal de Venda)"):
+                st.markdown("""
+                Esta é uma ferramenta estatística para identificar bons momentos de **venda**.
+                - **Interpretação:** Ela mostra a margem de lucro (barras) contra sua média móvel (linha laranja) e bandas de desvio padrão (área sombreada).
+                - **Sinal de Venda:** Quando as barras de lucro tocam ou **ultrapassam a banda superior**, a margem está estatisticamente "esticada" ou "cara". A teoria da reversão à média sugere que este pode ser um pico de lucratividade, representando um momento oportuno para vender antes de uma possível queda.
+                """)
             col_std1, col_std2 = st.columns(2)
             with col_std1:
                 periodo_media = st.slider("Período da Média Móvel (meses)", min_value=3, max_value=24, value=12, help="Janela de cálculo para a média e desvio padrão.")
@@ -238,6 +267,7 @@ with col_main:
             fig_reversao.update_layout(title_text='Sinal de Venda: Análise de Reversão à Média da Margem', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_reversao.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
             st.plotly_chart(fig_reversao, use_container_width=True)
+
 
             # --- ANÁLISE DA SIMULAÇÃO (FINAL) ---
             st.markdown("---")
