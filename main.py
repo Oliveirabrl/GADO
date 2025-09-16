@@ -107,7 +107,7 @@ with col_main:
 
     if df_export is not None and df_prices is not None:
         try:
-            # --- PREPARAÇÃO DOS DADOS ---
+            # --- PREPARAÇÃO DE DADOS E CÁLCULOS BASE ---
             required_cols_export = ['periodo', 'kg_liquido', 'preco_brl']
             for col in required_cols_export:
                 if col not in df_export.columns:
@@ -120,7 +120,6 @@ with col_main:
 
             df_export['Data'] = pd.to_datetime(df_export['periodo'], format='%d/%m/%Y')
             df_prices['Data'] = pd.to_datetime(df_prices['data'], format='%d/%m/%Y')
-            
             df_merged = pd.merge(df_export, df_prices, on="Data", how="inner")
             
             numeric_cols = ['kg_liquido', 'preco_brl_arroba', 'preco_bezerro_brl', 'preco_soja_brl', 'preco_milho_brl', 'Boi com 20@/Garrote', 'Boi com 20@/soja', 'Boi com 20@/milho']
@@ -128,32 +127,121 @@ with col_main:
                 df_merged[col] = pd.to_numeric(df_merged[col].astype(str).str.replace(',', '.'), errors='coerce')
             df_merged.dropna(subset=numeric_cols, inplace=True)
             df_merged['kg_liquido'] = df_merged['kg_liquido'].astype(int)
+            df_merged['mes'] = df_merged['Data'].dt.month
+
+            df_merged['KG_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['kg_liquido'].shift(1)
+            custo_producao_base = calcular_custo_alimentacao(df_merged, 11.0, 80, 6.5, 85.0) + df_merged['preco_bezerro_brl']
+            df_merged['custo_producao_base'] = custo_producao_base
+            df_merged['custo_producao_base_media_movel'] = df_merged['custo_producao_base'].rolling(window=12).mean()
+            df_merged['receita_por_cabeca_base'] = df_merged['preco_brl_arroba'] * 28
+            df_merged['margem_bruta_base'] = df_merged['receita_por_cabeca_base'] - df_merged['custo_producao_base']
+
+            # --- LÓGICA E GRÁFICO DO TERMÔMETRO HISTÓRICO ---
+            st.markdown("---")
+            st.markdown("<h3 style='text-align: center;'>Termômetro de Mercado e Histórico de Sinais</h3>", unsafe_allow_html=True)
+            
+            df_sazonal = df_merged.groupby('mes')[['preco_brl_arroba']].mean()
+            media_sazonal_anual = df_sazonal['preco_brl_arroba'].mean()
+            
+            media_relacao_troca = df_merged['Boi com 20@/Garrote'].mean()
+            periodo_media_termometro = 12
+            num_desvios_termometro = 2.0
+            df_merged['margem_media_movel_base'] = df_merged['margem_bruta_base'].rolling(window=periodo_media_termometro).mean()
+            df_merged['margem_desvio_padrao_base'] = df_merged['margem_bruta_base'].rolling(window=periodo_media_termometro).std()
+            df_merged['banda_superior_base'] = df_merged['margem_media_movel_base'] + (df_merged['margem_desvio_padrao_base'] * num_desvios_termometro)
+            df_merged['banda_inferior_base'] = df_merged['margem_media_movel_base'] - (df_merged['margem_desvio_padrao_base'] * num_desvios_termometro)
+
+            venda_1_series = df_merged['kg_liquido'] > df_merged['KG_Anterior']
+            venda_2_series = df_merged['mes'].apply(lambda m: df_sazonal.loc[m, 'preco_brl_arroba'] > media_sazonal_anual)
+            venda_3_series = df_merged['margem_bruta_base'] > 0
+            venda_4_series = df_merged['Boi com 20@/Garrote'] < media_relacao_troca
+            venda_5_series = df_merged['margem_bruta_base'] >= df_merged['banda_superior_base']
+            
+            compra_1_series = df_merged['kg_liquido'] < df_merged['KG_Anterior']
+            compra_2_series = df_merged['mes'].apply(lambda m: df_sazonal.loc[m, 'preco_brl_arroba'] < media_sazonal_anual)
+            compra_3_series = df_merged['custo_producao_base'] < df_merged['custo_producao_base_media_movel']
+            compra_4_series = df_merged['Boi com 20@/Garrote'] > media_relacao_troca
+            compra_5_series = df_merged['margem_bruta_base'] <= df_merged['banda_inferior_base']
+
+            sinal_venda_total = venda_1_series & venda_2_series & venda_3_series & venda_4_series & venda_5_series
+            sinal_compra_total = compra_1_series & compra_2_series & compra_3_series & compra_4_series & compra_5_series
+
+            df_merged['sinal_confluencia'] = np.select([sinal_venda_total, sinal_compra_total], [-1, 1], default=0)
+
+            latest_data = df_merged.iloc[-1]
+            last_month_name = latest_data['Data'].strftime("%B de %Y")
+            if latest_data['sinal_confluencia'] == -1:
+                st.warning(f"SINAL DE VENDA FORTE - Confluência de Alta em {last_month_name}", icon="📈")
+            elif latest_data['sinal_confluencia'] == 1:
+                st.success(f"SINAL DE COMPRA FORTE - Confluência de Baixa em {last_month_name}", icon="📉")
+            else:
+                st.info(f"MERCADO MISTO OU NEUTRO - Sem Confluência de Sinais em {last_month_name}", icon="📊")
+
+            with st.expander("Ver explicação do Gráfico de Histórico de Sinais"):
+                st.markdown("""
+                Este gráfico é o **backtest visual** do Termômetro de Mercado. Ele plota os sinais de confluência sobre o gráfico de margem bruta para que você possa avaliar seu desempenho histórico.
+                - **Sinal de Compra (▲ Verde):** Marcado abaixo da margem, aparece em meses onde **todos os 5 indicadores** de compra apontaram para uma oportunidade.
+                - **Sinal de Venda (▼ Vermelho):** Marcado acima da margem, aparece em meses onde **todos os 5 indicadores** de venda apontaram para um provável pico de mercado.
+                - **Barras Cinzas:** Representam a margem de lucro (receita - custo) em cada mês, fornecendo o contexto para os sinais.
+                """)
+            
+            df_sinais_compra = df_merged[df_merged['sinal_confluencia'] == 1]
+            df_sinais_venda = df_merged[df_merged['sinal_confluencia'] == -1]
+
+            fig_sinais_hist = go.Figure()
+            fig_sinais_hist.add_trace(go.Bar(
+                x=df_merged['Data'],
+                y=df_merged['margem_bruta_base'],
+                name='Margem Bruta (R$)',
+                marker_color='grey'
+            ))
+            fig_sinais_hist.add_trace(go.Scatter(
+                x=df_sinais_compra['Data'],
+                y=df_sinais_compra['margem_bruta_base'] - 200, 
+                mode='markers',
+                name='Sinal de Compra Forte',
+                marker=dict(symbol='triangle-up', color='green', size=12)
+            ))
+            fig_sinais_hist.add_trace(go.Scatter(
+                x=df_sinais_venda['Data'],
+                y=df_sinais_venda['margem_bruta_base'] + 200,
+                mode='markers',
+                name='Sinal de Venda Forte',
+                marker=dict(symbol='triangle-down', color='red', size=12)
+            ))
+            fig_sinais_hist.update_layout(
+                title_text='Backtest Visual: Sinais de Confluência vs. Margem de Lucro',
+                plot_bgcolor='rgba(17,17,17,0.9)',
+                paper_bgcolor='rgba(17,17,17,0.9)',
+                font_color="white",
+                title_x=0.5,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            fig_sinais_hist.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
+            st.plotly_chart(fig_sinais_hist, use_container_width=True)
 
             # --- SEÇÃO 1: ANÁLISE ESTRATÉGICA DE MERCADO ---
             st.markdown("---")
             st.markdown("### 1. Análise Estratégica de Mercado")
 
-            # GRÁFICO 1: EXPORTAÇÃO VS. PREÇO DA ARROBA
             with st.expander("Ver explicação do Gráfico de Exportação"):
                 st.markdown("""
                 Este gráfico contextualiza o mercado, mostrando a relação entre o **volume de carne bovina exportada pelo Brasil (barras)** e o **preço da arroba no mercado interno (linha amarela)**.
                 - **Interpretação:** Geralmente, altos volumes de exportação podem aumentar a demanda total por gado, exercendo pressão de alta sobre os preços internos.
                 - **Cores:** As barras verdes indicam que a exportação do mês foi **maior** que a do mesmo mês no ano anterior, enquanto as vermelhas indicam que foi **menor**.
                 """)
-            df_merged['KG'] = df_merged['kg_liquido']
-            df_merged['KG_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['KG'].shift(1)
-            conditions_export = [df_merged['KG'] > df_merged['KG_Anterior'], df_merged['KG'] < df_merged['KG_Anterior']]
+            conditions_export = [df_merged['kg_liquido'] > df_merged['KG_Anterior'], df_merged['kg_liquido'] < df_merged['KG_Anterior']]
             choices_export = ['green', 'red']
             colors_export = np.select(conditions_export, choices_export, default='#1f77b4').tolist()
+            
             fig_export = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_export.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['KG'], name='KG Exportado', marker_color=colors_export), secondary_y=False)
+            fig_export.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['kg_liquido'], name='KG Exportado', marker_color=colors_export), secondary_y=False)
             fig_export.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['preco_brl_arroba'], name='Preço Arroba (R$)', mode='lines', line=dict(color='orange')), secondary_y=True)
             fig_export.update_layout(title_text='Exportação Mensal (KG) vs. Preço da Arroba (R$)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_export.update_yaxes(title_text="<b>Quantidade Exportada</b> (KG)", secondary_y=False)
             fig_export.update_yaxes(title_text="<b>Preço da Arroba</b> (R$)", secondary_y=True, color="orange")
             st.plotly_chart(fig_export, use_container_width=True)
 
-            # GRÁFICO DE SAZONALIDADE
             st.markdown("---")
             with st.expander("Ver explicação do Gráfico de Sazonalidade"):
                 st.markdown("""
@@ -161,15 +249,12 @@ with col_main:
                 - **Interpretação:** Ajuda a identificar padrões sazonais, como a **entressafra** (tipicamente no segundo semestre), onde os preços da arroba (linha amarela) historicamente tendem a ser mais altos.
                 - **Estratégia:** O ideal é planejar o ciclo de engorda para que a venda dos animais coincida com os meses de preços historicamente mais altos.
                 """)
-            df_merged['mes'] = df_merged['Data'].dt.month
-            custo_producao_base = calcular_custo_alimentacao(df_merged, 11.0, 80, 6.5, 85.0) + df_merged['preco_bezerro_brl']
-            df_merged['custo_producao_base'] = custo_producao_base
-            df_sazonal = df_merged.groupby('mes')[['preco_brl_arroba', 'custo_producao_base']].mean().reset_index()
             meses = {1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'}
-            df_sazonal['mes_nome'] = df_sazonal['mes'].map(meses)
+            df_sazonal_plot = df_merged.groupby('mes')[['preco_brl_arroba', 'custo_producao_base']].mean().reset_index()
+            df_sazonal_plot['mes_nome'] = df_sazonal_plot['mes'].map(meses)
             fig_sazonal = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_sazonal.add_trace(go.Bar(x=df_sazonal['mes_nome'], y=df_sazonal['custo_producao_base'], name='Custo Médio de Produção'), secondary_y=False)
-            fig_sazonal.add_trace(go.Scatter(x=df_sazonal['mes_nome'], y=df_sazonal['preco_brl_arroba'], name='Preço Médio da Arroba', mode='lines', line=dict(color='yellow')), secondary_y=True)
+            fig_sazonal.add_trace(go.Bar(x=df_sazonal_plot['mes_nome'], y=df_sazonal_plot['custo_producao_base'], name='Custo Médio de Produção'), secondary_y=False)
+            fig_sazonal.add_trace(go.Scatter(x=df_sazonal_plot['mes_nome'], y=df_sazonal_plot['preco_brl_arroba'], name='Preço Médio da Arroba', mode='lines', line=dict(color='yellow')), secondary_y=True)
             fig_sazonal.update_layout(title_text='Análise de Sazonalidade Média (2015-Presente)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_sazonal.update_yaxes(title_text="<b>Custo Médio de Produção</b> (R$)", secondary_y=False)
             fig_sazonal.update_yaxes(title_text="<b>Preço Médio da Arroba</b> (R$)", secondary_y=True, color="yellow")
@@ -204,14 +289,12 @@ with col_main:
             
             PESO_FINAL_EM_ARROBAS = 28
             df_merged['receita_por_cabeca'] = df_merged['preco_brl_arroba'] * PESO_FINAL_EM_ARROBAS
-            
             df_merged['margem_bruta'] = df_merged['receita_por_cabeca'] - df_merged['custo_producao']
             colors_custo = ['#DC143C' if val < 0 else '#1f77b4' for val in df_merged['margem_bruta']]
 
             fig_custo = go.Figure()
             fig_custo.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['custo_producao'], name='Custo por Cabeça (R$)', marker_color=colors_custo))
             fig_custo.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['receita_por_cabeca'], name=f'Receita por Cabeça ({PESO_FINAL_EM_ARROBAS}@) (R$)', mode='lines', line=dict(color='yellow')))
-            
             fig_custo.update_layout(title_text='Custo de Produção vs. Receita Estimada por Cabeça', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_custo.update_yaxes(title_text="<b>Valor por Cabeça</b> (R$)")
             st.plotly_chart(fig_custo, use_container_width=True)
@@ -222,9 +305,10 @@ with col_main:
 
             with st.expander("Ver explicação do Gráfico de Relação de Troca (Sinal de Compra)"):
                 st.markdown("""
-                Esta é uma ferramenta para identificar bons momentos de **compra**.
-                - **Interpretação:** A linha amarela mostra a relação de troca (quantas @ de boi gordo são necessárias para comprar um bezerro). Quando a linha está **acima da média histórica** (tracejada), seu poder de compra é alto, indicando um momento favorável para adquirir animais de reposição.
-                - **Contexto:** As barras mostram o preço absoluto do bezerro.
+                Esta é uma ferramenta para identificar bons momentos de **compra** de bezerros para reposição.
+                - **Interpretação:** A linha amarela mostra a relação de troca, ou seja, **quantos bezerros podem ser comprados com a venda de um Boi de 20 arrobas**.
+                - **Sinal de Compra:** Quando a linha está **acima da média histórica** (tracejada), o poder de compra de bezerros está alto, indicando um momento favorável para adquirir animais de reposição. Mais bezerros por boi = melhor para o comprador.
+                - **Cores das Barras:** As barras rosas indicam meses onde o preço do bezerro foi **menor que no mesmo mês do ano anterior**, sugerindo uma melhora no custo de aquisição em uma base anual.
                 """)
             df_merged['Bezerro_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['preco_bezerro_brl'].shift(1)
             conditions_bezerro = [df_merged['preco_bezerro_brl'] < df_merged['Bezerro_Anterior']]
@@ -232,8 +316,7 @@ with col_main:
             colors_bezerro = np.select(conditions_bezerro, choices_bezerro, default='#1f77b4').tolist()
             fig_bezerro = make_subplots(specs=[[{"secondary_y": True}]])
             fig_bezerro.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['preco_bezerro_brl'], name='Preço Bezerro (R$)', marker_color=colors_bezerro), secondary_y=False)
-            fig_bezerro.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['Boi com 20@/Garrote'], name='Boi com 20@/Garrote', mode='lines', line=dict(color='yellow')), secondary_y=True)
-            media_relacao_troca = df_merged['Boi com 20@/Garrote'].mean()
+            fig_bezerro.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['Boi com 20@/Garrote'], name='Boi com 20@/Bezerro', mode='lines', line=dict(color='yellow')), secondary_y=True)
             fig_bezerro.add_hline(y=media_relacao_troca, line_dash="dash", line_color="white", annotation_text=f"Média Histórica ({media_relacao_troca:.2f})", annotation_position="bottom right", secondary_y=True)
             fig_bezerro.update_layout(title_text='Sinal de Compra: Relação de Troca (Boi Gordo vs. Bezerro)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_bezerro.update_yaxes(title_text="<b>Preço do Bezerro</b> (R$)", secondary_y=False)
@@ -241,38 +324,54 @@ with col_main:
             st.plotly_chart(fig_bezerro, use_container_width=True)
 
             st.markdown("---")
-            with st.expander("Ver explicação do Gráfico de Reversão da Margem (Sinal de Venda)"):
+            with st.expander("Ver explicação do Gráfico de Reversão da Margem (Sinais de Compra e Venda)"):
                 st.markdown("""
-                Esta é uma ferramenta estatística para identificar bons momentos de **venda**.
-                - **Interpretação:** Ela mostra a margem de lucro (barras) contra sua média móvel (linha laranja) e bandas de desvio padrão (área sombreada).
-                - **Sinal de Venda:** Quando as barras de lucro tocam ou **ultrapassam a banda superior**, a margem está estatisticamente "esticada" ou "cara". A teoria da reversão à média sugere que este pode ser um pico de lucratividade, representando um momento oportuno para vender antes de uma possível queda.
+                Esta é uma ferramenta estatística para identificar momentos de **compra (risco/oportunidade)** e **venda (picos de euforia)**.
+                - **Sinal de Venda (Ciano):** Quando as barras de lucro tocam ou **ultrapassam a banda superior**, a margem está estatisticamente "esticada". Isso sugere um pico de lucratividade, representando um momento oportuno para vender.
+                - **Sinal de Compra (Amarelo):** Quando as barras tocam ou **caem abaixo da banda inferior**, a margem está historicamente "comprimida" ou "barata". Para um investidor de perfil contrário, isso pode sinalizar um ponto de pessimismo máximo, que historicamente precede uma recuperação.
+                - **Cores:** **Verde** para lucro normal, **Vermelho** para prejuízo normal (dentro das bandas).
                 """)
             col_std1, col_std2 = st.columns(2)
             with col_std1:
-                periodo_media = st.slider("Período da Média Móvel (meses)", min_value=3, max_value=24, value=12, help="Janela de cálculo para a média e desvio padrão.")
+                periodo_media_reversao = st.slider("Período da Média Móvel (meses)", min_value=3, max_value=24, value=12, help="Janela de cálculo para a média e desvio padrão.")
             with col_std2:
-                num_desvios = st.slider("Número de Desvios Padrão", min_value=1.0, max_value=3.0, value=2.0, step=0.5, help="Define a largura das bandas. 2.0 é o padrão de mercado.")
+                num_desvios_reversao = st.slider("Número de Desvios Padrão", min_value=1.0, max_value=3.0, value=2.0, step=0.5, help="Define a largura das bandas. 2.0 é o padrão de mercado.")
 
-            df_merged['margem_media_movel'] = df_merged['margem_bruta'].rolling(window=periodo_media).mean()
-            df_merged['margem_desvio_padrao'] = df_merged['margem_bruta'].rolling(window=periodo_media).std()
-            df_merged['banda_superior'] = df_merged['margem_media_movel'] + (df_merged['margem_desvio_padrao'] * num_desvios)
-            df_merged['banda_inferior'] = df_merged['margem_media_movel'] - (df_merged['margem_desvio_padrao'] * num_desvios)
+            df_merged['margem_media_movel_reversao'] = df_merged['margem_bruta'].rolling(window=periodo_media_reversao).mean()
+            df_merged['margem_desvio_padrao_reversao'] = df_merged['margem_bruta'].rolling(window=periodo_media_reversao).std()
+            df_merged['banda_superior_reversao'] = df_merged['margem_media_movel_reversao'] + (df_merged['margem_desvio_padrao_reversao'] * num_desvios_reversao)
+            df_merged['banda_inferior_reversao'] = df_merged['margem_media_movel_reversao'] - (df_merged['margem_desvio_padrao_reversao'] * num_desvios_reversao)
+
+            colors_margin_reversao = []
+            for i in range(len(df_merged)):
+                margem = df_merged['margem_bruta'].iloc[i]
+                superior = df_merged['banda_superior_reversao'].iloc[i]
+                inferior = df_merged['banda_inferior_reversao'].iloc[i]
+                if margem >= superior: colors_margin_reversao.append('cyan')
+                elif margem <= inferior: colors_margin_reversao.append('yellow')
+                elif margem < 0: colors_margin_reversao.append('red')
+                else: colors_margin_reversao.append('green')
 
             fig_reversao = go.Figure()
-            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['banda_superior'], mode='lines', line=dict(color='rgba(255,255,255,0)'), showlegend=False))
-            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['banda_inferior'], mode='lines', line=dict(color='rgba(255,255,255,0)'), name='Bandas de Desvio Padrão', fill='tonexty', fillcolor='rgba(255, 255, 255, 0.1)'))
-            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['margem_media_movel'], name='Média Móvel da Margem', mode='lines', line=dict(color='orange', dash='dash')))
-            colors_margin_reversao = ['green' if val >= 0 else 'red' for val in df_merged['margem_bruta']]
+            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['banda_superior_reversao'], mode='lines', line=dict(color='rgba(255,255,255,0)'), showlegend=False))
+            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['banda_inferior_reversao'], mode='lines', line=dict(color='rgba(255,255,255,0)'), name='Bandas de Desvio Padrão', fill='tonexty', fillcolor='rgba(255, 255, 255, 0.1)'))
+            fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['margem_media_movel_reversao'], name='Média Móvel da Margem', mode='lines', line=dict(color='orange', dash='dash')))
             fig_reversao.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['margem_bruta'], name='Margem Bruta (R$)', marker_color=colors_margin_reversao))
-            fig_reversao.update_layout(title_text='Sinal de Venda: Análise de Reversão à Média da Margem', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            fig_reversao.update_layout(title_text='Sinais de Compra e Venda por Reversão à Média da Margem', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_reversao.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
             st.plotly_chart(fig_reversao, use_container_width=True)
-
 
             # --- ANÁLISE DA SIMULAÇÃO (FINAL) ---
             st.markdown("---")
             st.markdown("<h3 style='text-align: center;'>Análise da Sua Simulação Específica</h3>", unsafe_allow_html=True)
             
+            with st.expander("Ver explicação do Gráfico de Comparação de Investimentos e Resumo"):
+                st.markdown("""
+                Esta seção final apresenta um resumo da sua simulação e compara o investimento em produção de gado com uma aplicação financeira de renda fixa atrelada à taxa Selic.
+                - **Gráfico de Linhas:** Mostra a evolução do valor acumulado ao longo do período de análise para ambas as opções de investimento (Gado vs. Selic). A linha tracejada vermelha representa uma projeção simplificada da taxa Selic.
+                - **Tabela de Resumo:** Detalha os lucros totais e as Taxas Internas de Retorno (TIR) mensal para cada tipo de investimento, além de um detalhamento dos custos e ganhos para a produção de gado.
+                """)
+
             total_arrobas_bought = initial_investment / buy_arroba_price if buy_arroba_price > 0 else 0
             arrobas_gain_total = arrobas_gain_head * num_heads_bought
             total_arrobas_sold = total_arrobas_bought + arrobas_gain_total
@@ -372,3 +471,4 @@ with col_logos:
     display_linked_image("assets/oscapital.jpeg", "https://oscapitaloficial.com.br/", "<p style='text-align: center;'>VISITE NOSSO SITE</p>", 200)
     st.markdown("<br>", unsafe_allow_html=True)
     display_linked_image("assets/IB_logo_stacked1.jpg", "https://ibkr.com/referral/edgleison239", "<p style='text-align: center;'>INVISTA EM MAIS DE 160 MERCADOS</p>", 200)
+
