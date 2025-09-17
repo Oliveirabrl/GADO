@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from PIL import Image # <-- NOVA IMPORTAÇÃO
 
 # --- Configuração da Página ---
 st.set_page_config(layout="wide")
@@ -16,7 +17,8 @@ st.set_page_config(layout="wide")
 # --- Define o caminho base do projeto de forma segura ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --- Funções Auxiliares para Imagens ---
+# --- Funções Auxiliares para Imagens e Gráficos ---
+
 def image_to_base64(image_path):
     """Converte uma imagem local para uma string Base64."""
     try:
@@ -37,6 +39,64 @@ def display_linked_image(image_path, url, caption, width):
                 unsafe_allow_html=True
             )
             st.markdown(caption, unsafe_allow_html=True)
+
+# --- NOVA FUNÇÃO PARA ADICIONAR MARCA D'ÁGUA E FONTE ---
+def adicionar_marca_e_fonte(fig, is_matplotlib=False):
+    """Adiciona uma marca d'água e um texto de fonte a um gráfico Plotly ou Matplotlib."""
+    source_text = "Fonte: CEPEA, B³ / Elaborado por: OS CAPITAL."
+    image_path = os.path.join(BASE_DIR, 'assets', 'oscapital.jpeg')
+
+    # Retorna a figura original se a imagem não for encontrada
+    if not os.path.exists(image_path):
+        st.warning(f"Imagem da marca d'água não encontrada em: {image_path}")
+        return fig
+
+    if is_matplotlib:
+        try:
+            img = Image.open(image_path)
+            width, height = fig.get_size_inches() * fig.dpi
+            
+            # Adiciona a marca d'água centralizada
+            fig_width_px, fig_height_px = int(width), int(height)
+            img_width_px, img_height_px = img.size
+            x_pos = (fig_width_px - img_width_px) // 2
+            y_pos = (fig_height_px - img_height_px) // 2
+            fig.figimage(img, xo=x_pos, yo=y_pos, alpha=0.1, zorder=-1)
+
+            # Adiciona o texto da fonte
+            fig.text(0.5, 0.01, source_text, ha='center', va='bottom', fontsize=9, color='grey')
+            fig.subplots_adjust(bottom=0.15) # Ajusta a margem para o texto não sobrepor
+        except Exception as e:
+            st.error(f"Erro ao adicionar marca d'água no Matplotlib: {e}")
+        return fig
+    else: # Plotly
+        try:
+            # Adiciona a marca d'água
+            fig.add_layout_image(
+                dict(
+                    source=Image.open(image_path),
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5,
+                    sizex=0.5, sizey=0.5,
+                    xanchor="center", yanchor="middle",
+                    opacity=0.15,
+                    layer="below"
+                )
+            )
+            # Adiciona o texto da fonte
+            fig.add_annotation(
+                text=source_text,
+                xref="paper", yref="paper",
+                x=0.5, y=-0.17,  # Posição abaixo do eixo X
+                showarrow=False,
+                align="center",
+                font=dict(size=11, color="grey")
+            )
+            # Garante espaço para a anotação
+            fig.update_layout(margin=dict(b=90))
+        except Exception as e:
+            st.error(f"Erro ao adicionar marca d'água no Plotly: {e}")
+        return fig
 
 # --- Carregamento de Dados ---
 @st.cache_data
@@ -140,7 +200,6 @@ with col_main:
             st.markdown("---")
             st.markdown("<h3 style='text-align: center;'>Termômetro de Mercado e Histórico de Sinais</h3>", unsafe_allow_html=True)
             
-            # NOVO: Slider para controlar a sensibilidade do sinal
             sensibilidade_sinal = st.slider(
                 "Sensibilidade do Sinal (Nº de Condições Mínimas)",
                 min_value=3, max_value=5, value=4,
@@ -170,7 +229,6 @@ with col_main:
             compra_4_series = df_merged['Boi com 20@/Garrote'] > media_relacao_troca
             compra_5_series = df_merged['margem_bruta_base'] <= df_merged['banda_inferior_base']
 
-            # NOVO: Lógica flexível baseada na sensibilidade
             soma_condicoes_venda = (venda_1_series.astype(int) + venda_2_series.astype(int) + venda_3_series.astype(int) + venda_4_series.astype(int) + venda_5_series.astype(int))
             soma_condicoes_compra = (compra_1_series.astype(int) + compra_2_series.astype(int) + compra_3_series.astype(int) + compra_4_series.astype(int) + compra_5_series.astype(int))
 
@@ -182,7 +240,6 @@ with col_main:
             latest_data = df_merged.iloc[-1]
             last_month_name = latest_data['Data'].strftime("%B de %Y")
             
-            # NOVO: Textos dinâmicos baseados na sensibilidade
             num_condicoes_venda_recente = int(soma_condicoes_venda.iloc[-1])
             num_condicoes_compra_recente = int(soma_condicoes_compra.iloc[-1])
 
@@ -206,35 +263,13 @@ with col_main:
             df_sinais_venda = df_merged[df_merged['sinal_confluencia'] == -1]
 
             fig_sinais_hist = go.Figure()
-            fig_sinais_hist.add_trace(go.Bar(
-                x=df_merged['Data'],
-                y=df_merged['margem_bruta_base'],
-                name='Margem Bruta (R$)',
-                marker_color='grey'
-            ))
-            fig_sinais_hist.add_trace(go.Scatter(
-                x=df_sinais_compra['Data'],
-                y=df_sinais_compra['margem_bruta_base'] - 200, 
-                mode='markers',
-                name='Sinal de Compra',
-                marker=dict(symbol='triangle-up', color='green', size=12)
-            ))
-            fig_sinais_hist.add_trace(go.Scatter(
-                x=df_sinais_venda['Data'],
-                y=df_sinais_venda['margem_bruta_base'] + 200,
-                mode='markers',
-                name='Sinal de Venda',
-                marker=dict(symbol='triangle-down', color='red', size=12)
-            ))
-            fig_sinais_hist.update_layout(
-                title_text='Backtest Visual: Sinais de Confluência vs. Margem de Lucro',
-                plot_bgcolor='rgba(17,17,17,0.9)',
-                paper_bgcolor='rgba(17,17,17,0.9)',
-                font_color="white",
-                title_x=0.5,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
+            fig_sinais_hist.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['margem_bruta_base'], name='Margem Bruta (R$)', marker_color='grey'))
+            fig_sinais_hist.add_trace(go.Scatter(x=df_sinais_compra['Data'], y=df_sinais_compra['margem_bruta_base'] - 200, mode='markers', name='Sinal de Compra', marker=dict(symbol='triangle-up', color='green', size=12)))
+            fig_sinais_hist.add_trace(go.Scatter(x=df_sinais_venda['Data'], y=df_sinais_venda['margem_bruta_base'] + 200, mode='markers', name='Sinal de Venda', marker=dict(symbol='triangle-down', color='red', size=12)))
+            fig_sinais_hist.update_layout(title_text='Backtest Visual: Sinais de Confluência vs. Margem de Lucro', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_sinais_hist.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
+            
+            fig_sinais_hist = adicionar_marca_e_fonte(fig_sinais_hist) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_sinais_hist, use_container_width=True)
 
             # --- SEÇÃO 1: ANÁLISE ESTRATÉGICA DE MERCADO ---
@@ -257,6 +292,8 @@ with col_main:
             fig_export.update_layout(title_text='Exportação Mensal (KG) vs. Preço da Arroba (R$)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_export.update_yaxes(title_text="<b>Quantidade Exportada</b> (KG)", secondary_y=False)
             fig_export.update_yaxes(title_text="<b>Preço da Arroba</b> (R$)", secondary_y=True, color="orange")
+
+            fig_export = adicionar_marca_e_fonte(fig_export) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_export, use_container_width=True)
 
             st.markdown("---")
@@ -275,6 +312,8 @@ with col_main:
             fig_sazonal.update_layout(title_text='Análise de Sazonalidade Média (2015-Presente)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_sazonal.update_yaxes(title_text="<b>Custo Médio de Produção</b> (R$)", secondary_y=False)
             fig_sazonal.update_yaxes(title_text="<b>Preço Médio da Arroba</b> (R$)", secondary_y=True, color="yellow")
+            
+            fig_sazonal = adicionar_marca_e_fonte(fig_sazonal) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_sazonal, use_container_width=True)
 
             # --- SEÇÃO 2: SIMULAÇÃO DE CUSTO E VIABILIDADE ---
@@ -314,6 +353,8 @@ with col_main:
             fig_custo.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['receita_por_cabeca'], name=f'Receita por Cabeça ({PESO_FINAL_EM_ARROBAS}@) (R$)', mode='lines', line=dict(color='yellow')))
             fig_custo.update_layout(title_text='Custo de Produção vs. Receita Estimada por Cabeça', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_custo.update_yaxes(title_text="<b>Valor por Cabeça</b> (R$)")
+
+            fig_custo = adicionar_marca_e_fonte(fig_custo) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_custo, use_container_width=True)
 
             # --- SEÇÃO 3: FERRAMENTAS DE TIMING ---
@@ -338,6 +379,8 @@ with col_main:
             fig_bezerro.update_layout(title_text='Sinal de Compra: Relação de Troca (Boi Gordo vs. Bezerro)', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_bezerro.update_yaxes(title_text="<b>Preço do Bezerro</b> (R$)", secondary_y=False)
             fig_bezerro.update_yaxes(title_text="<b>Relação de Troca</b>", secondary_y=True)
+
+            fig_bezerro = adicionar_marca_e_fonte(fig_bezerro) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_bezerro, use_container_width=True)
 
             st.markdown("---")
@@ -376,6 +419,8 @@ with col_main:
             fig_reversao.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['margem_bruta'], name='Margem Bruta (R$)', marker_color=colors_margin_reversao))
             fig_reversao.update_layout(title_text='Sinais de Compra e Venda por Reversão à Média da Margem', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             fig_reversao.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
+
+            fig_reversao = adicionar_marca_e_fonte(fig_reversao) # <-- APLICAÇÃO DA FUNÇÃO
             st.plotly_chart(fig_reversao, use_container_width=True)
 
             # --- ANÁLISE DA SIMULAÇÃO (FINAL) ---
@@ -442,6 +487,7 @@ with col_main:
                 
             ax1.get_legend().remove()
             
+            fig_comp = adicionar_marca_e_fonte(fig_comp, is_matplotlib=True) # <-- APLICAÇÃO DA FUNÇÃO
             st.pyplot(fig_comp)
             
             st.markdown("---")
