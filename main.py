@@ -136,6 +136,107 @@ with col_main:
             df_merged['receita_por_cabeca_base'] = df_merged['preco_brl_arroba'] * 28
             df_merged['margem_bruta_base'] = df_merged['receita_por_cabeca_base'] - df_merged['custo_producao_base']
 
+            # --- LÓGICA E GRÁFICO DO TERMÔMETRO HISTÓRICO ---
+            st.markdown("---")
+            st.markdown("<h3 style='text-align: center;'>Termômetro de Mercado e Histórico de Sinais</h3>", unsafe_allow_html=True)
+            
+            # NOVO: Slider para controlar a sensibilidade do sinal
+            sensibilidade_sinal = st.slider(
+                "Sensibilidade do Sinal (Nº de Condições Mínimas)",
+                min_value=3, max_value=5, value=4,
+                help="Define o número mínimo de indicadores (de 1 a 5) que precisam apontar na mesma direção para gerar um sinal."
+            )
+
+            df_sazonal = df_merged.groupby('mes')[['preco_brl_arroba']].mean()
+            media_sazonal_anual = df_sazonal['preco_brl_arroba'].mean()
+            
+            media_relacao_troca = df_merged['Boi com 20@/Garrote'].mean()
+            periodo_media_termometro = 12
+            num_desvios_termometro = 2.0
+            df_merged['margem_media_movel_base'] = df_merged['margem_bruta_base'].rolling(window=periodo_media_termometro).mean()
+            df_merged['margem_desvio_padrao_base'] = df_merged['margem_bruta_base'].rolling(window=periodo_media_termometro).std()
+            df_merged['banda_superior_base'] = df_merged['margem_media_movel_base'] + (df_merged['margem_desvio_padrao_base'] * num_desvios_termometro)
+            df_merged['banda_inferior_base'] = df_merged['margem_media_movel_base'] - (df_merged['margem_desvio_padrao_base'] * num_desvios_termometro)
+
+            venda_1_series = df_merged['kg_liquido'] > df_merged['KG_Anterior']
+            venda_2_series = df_merged['mes'].apply(lambda m: df_sazonal.loc[m, 'preco_brl_arroba'] > media_sazonal_anual)
+            venda_3_series = df_merged['margem_bruta_base'] > 0
+            venda_4_series = df_merged['Boi com 20@/Garrote'] < media_relacao_troca
+            venda_5_series = df_merged['margem_bruta_base'] >= df_merged['banda_superior_base']
+            
+            compra_1_series = df_merged['kg_liquido'] < df_merged['KG_Anterior']
+            compra_2_series = df_merged['mes'].apply(lambda m: df_sazonal.loc[m, 'preco_brl_arroba'] < media_sazonal_anual)
+            compra_3_series = df_merged['custo_producao_base'] < df_merged['custo_producao_base_media_movel']
+            compra_4_series = df_merged['Boi com 20@/Garrote'] > media_relacao_troca
+            compra_5_series = df_merged['margem_bruta_base'] <= df_merged['banda_inferior_base']
+
+            # NOVO: Lógica flexível baseada na sensibilidade
+            soma_condicoes_venda = (venda_1_series.astype(int) + venda_2_series.astype(int) + venda_3_series.astype(int) + venda_4_series.astype(int) + venda_5_series.astype(int))
+            soma_condicoes_compra = (compra_1_series.astype(int) + compra_2_series.astype(int) + compra_3_series.astype(int) + compra_4_series.astype(int) + compra_5_series.astype(int))
+
+            sinal_venda_total = soma_condicoes_venda >= sensibilidade_sinal
+            sinal_compra_total = soma_condicoes_compra >= sensibilidade_sinal
+
+            df_merged['sinal_confluencia'] = np.select([sinal_venda_total, sinal_compra_total], [-1, 1], default=0)
+
+            latest_data = df_merged.iloc[-1]
+            last_month_name = latest_data['Data'].strftime("%B de %Y")
+            
+            # NOVO: Textos dinâmicos baseados na sensibilidade
+            num_condicoes_venda_recente = int(soma_condicoes_venda.iloc[-1])
+            num_condicoes_compra_recente = int(soma_condicoes_compra.iloc[-1])
+
+            if latest_data['sinal_confluencia'] == -1:
+                st.warning(f"SINAL DE VENDA ({num_condicoes_venda_recente}/5) - Confluência de Alta em {last_month_name}", icon="📈")
+            elif latest_data['sinal_confluencia'] == 1:
+                st.success(f"SINAL DE COMPRA ({num_condicoes_compra_recente}/5) - Confluência de Baixa em {last_month_name}", icon="📉")
+            else:
+                st.info(f"MERCADO MISTO OU NEUTRO - Sem Confluência de Sinais em {last_month_name} (Compra: {num_condicoes_compra_recente}/5, Venda: {num_condicoes_venda_recente}/5)", icon="📊")
+
+            with st.expander("Ver explicação do Gráfico de Histórico de Sinais"):
+                st.markdown(f"""
+                Este gráfico é o **backtest visual** do Termômetro de Mercado. Ele plota os sinais de confluência sobre o gráfico de margem bruta para que você possa avaliar seu desempenho histórico.
+                - **Sensibilidade Atual:** Um sinal é gerado quando pelo menos **{sensibilidade_sinal} de 5 indicadores** apontam na mesma direção.
+                - **Sinal de Compra (▲ Verde):** Marcado abaixo da margem, aparece em meses onde o critério de sensibilidade para compra foi atingido.
+                - **Sinal de Venda (▼ Vermelho):** Marcado acima da margem, aparece em meses onde o critério de sensibilidade para venda foi atingido.
+                - **Barras Cinzas:** Representam a margem de lucro (receita - custo) em cada mês, fornecendo o contexto para os sinais.
+                """)
+            
+            df_sinais_compra = df_merged[df_merged['sinal_confluencia'] == 1]
+            df_sinais_venda = df_merged[df_merged['sinal_confluencia'] == -1]
+
+            fig_sinais_hist = go.Figure()
+            fig_sinais_hist.add_trace(go.Bar(
+                x=df_merged['Data'],
+                y=df_merged['margem_bruta_base'],
+                name='Margem Bruta (R$)',
+                marker_color='grey'
+            ))
+            fig_sinais_hist.add_trace(go.Scatter(
+                x=df_sinais_compra['Data'],
+                y=df_sinais_compra['margem_bruta_base'] - 200, 
+                mode='markers',
+                name='Sinal de Compra',
+                marker=dict(symbol='triangle-up', color='green', size=12)
+            ))
+            fig_sinais_hist.add_trace(go.Scatter(
+                x=df_sinais_venda['Data'],
+                y=df_sinais_venda['margem_bruta_base'] + 200,
+                mode='markers',
+                name='Sinal de Venda',
+                marker=dict(symbol='triangle-down', color='red', size=12)
+            ))
+            fig_sinais_hist.update_layout(
+                title_text='Backtest Visual: Sinais de Confluência vs. Margem de Lucro',
+                plot_bgcolor='rgba(17,17,17,0.9)',
+                paper_bgcolor='rgba(17,17,17,0.9)',
+                font_color="white",
+                title_x=0.5,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            fig_sinais_hist.update_yaxes(title_text="<b>Margem por Cabeça</b> (R$)")
+            st.plotly_chart(fig_sinais_hist, use_container_width=True)
+
             # --- SEÇÃO 1: ANÁLISE ESTRATÉGICA DE MERCADO ---
             st.markdown("---")
             st.markdown("### 1. Análise Estratégica de Mercado")
@@ -226,7 +327,6 @@ with col_main:
                 - **Sinal de Compra:** Quando a linha está **acima da média histórica** (tracejada), o poder de compra de bezerros está alto, indicando um momento favorável para adquirir animais de reposição. Mais bezerros por boi = melhor para o comprador.
                 - **Cores das Barras:** As barras rosas indicam meses onde o preço do bezerro foi **menor que no mesmo mês do ano anterior**, sugerindo uma melhora no custo de aquisição em uma base anual.
                 """)
-            media_relacao_troca = df_merged['Boi com 20@/Garrote'].mean()
             df_merged['Bezerro_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['preco_bezerro_brl'].shift(1)
             conditions_bezerro = [df_merged['preco_bezerro_brl'] < df_merged['Bezerro_Anterior']]
             choices_bezerro = ['pink']
