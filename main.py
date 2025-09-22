@@ -55,10 +55,14 @@ def adicionar_marca_e_fonte(fig, is_matplotlib=False):
             img = Image.open(image_path)
             width, height = fig.get_size_inches() * fig.dpi
             fig_width_px, fig_height_px = int(width), int(height)
+            
+            # Centraliza a imagem no canvas da figura
             img_width_px, img_height_px = img.size
             x_pos = (fig_width_px - img_width_px) // 2
             y_pos = (fig_height_px - img_height_px) // 2
-            fig.figimage(img, xo=x_pos, yo=y_pos, alpha=0.1, zorder=-1)
+            
+            # Aumenta a opacidade para 0.20 para maior visibilidade
+            fig.figimage(img, xo=x_pos, yo=y_pos, alpha=0.20, zorder=-1) 
             fig.text(0.5, 0.01, source_text, ha='center', va='bottom', fontsize=9, color='grey')
             fig.subplots_adjust(bottom=0.15)
         except Exception as e:
@@ -73,7 +77,7 @@ def adicionar_marca_e_fonte(fig, is_matplotlib=False):
                     x=0.5, y=0.5,
                     sizex=0.5, sizey=0.5,
                     xanchor="center", yanchor="middle",
-                    opacity=0.15,
+                    opacity=0.20, # Aumenta a opacidade para 0.20
                     layer="below"
                 )
             )
@@ -107,58 +111,101 @@ def load_data(file_name, sep=';', decimal=','):
         return None
 
 # --- Função para calcular o custo da alimentação dinamicamente ---
-def calcular_custo_alimentacao(df, arrobas_a_ganhar, percentual_milho, conversao_alimentar, pct_concentrado_dieta):
+def calcular_custo_alimentacao(arrobas_a_ganhar, conversao_alimentar, pct_concentrado_dieta, composicao, precos):
+    """
+    Calcula o custo de alimentação com base em múltiplos insumos.
+    composicao: dict com {'milho': %, 'soja': %, 'nucleo': %, 'outros': %}
+    precos: dict com {'milho_saca': R$, 'soja_saca': R$, 'nucleo_kg': R$, 'outros_kg': R$}
+    """
+    # Constantes
     KG_POR_ARROBA = 15
     RENDIMENTO_CARCACA = 0.55
     MS_MILHO = 0.88
     MS_SOJA = 0.89
+    MS_NUCLEO = 0.95 # Assumido
+    MS_OUTROS = 0.90 # Assumido
     KG_SACA_MILHO = 60
     KG_SACA_SOJA = 50
+
+    if arrobas_a_ganhar <= 0:
+        is_series = any(isinstance(p, pd.Series) for p in precos.values())
+        return pd.Series([0] * len(next(p for p in precos.values() if isinstance(p, pd.Series)))) if is_series else 0
+
     kg_carcaca_a_ganhar = arrobas_a_ganhar * KG_POR_ARROBA
     kg_peso_vivo_a_ganhar = kg_carcaca_a_ganhar / RENDIMENTO_CARCACA
     consumo_total_ms = kg_peso_vivo_a_ganhar * conversao_alimentar
     total_concentrado_ms = consumo_total_ms * (pct_concentrado_dieta / 100)
-    percentual_soja = 100 - percentual_milho
-    milho_ms = total_concentrado_ms * (percentual_milho / 100)
-    soja_ms = total_concentrado_ms * (percentual_soja / 100)
-    consumo_total_milho_kg = milho_ms / MS_MILHO
-    consumo_total_soja_kg = soja_ms / MS_SOJA
-    sacos_de_milho = consumo_total_milho_kg / KG_SACA_MILHO
-    sacos_de_soja = consumo_total_soja_kg / KG_SACA_SOJA
-    custo_total_milho = df['preco_milho_brl'] * sacos_de_milho
-    custo_total_soja = df['preco_soja_brl'] * sacos_de_soja
-    return custo_total_milho + custo_total_soja
+    
+    custo_total = 0
+    soma_composicao = sum(filter(None, composicao.values()))
+    if soma_composicao == 0: return 0
+
+    # Normaliza a composição para que a soma seja sempre 100% no cálculo interno
+    if composicao.get('milho', 0) > 0 and 'milho_saca' in precos:
+        milho_ms = total_concentrado_ms * (composicao['milho'] / soma_composicao)
+        consumo_total_milho_kg = milho_ms / MS_MILHO
+        sacos_de_milho = consumo_total_milho_kg / KG_SACA_MILHO
+        custo_total += precos['milho_saca'] * sacos_de_milho
+
+    if composicao.get('soja', 0) > 0 and 'soja_saca' in precos:
+        soja_ms = total_concentrado_ms * (composicao['soja'] / soma_composicao)
+        consumo_total_soja_kg = soja_ms / MS_SOJA
+        sacos_de_soja = consumo_total_soja_kg / KG_SACA_SOJA
+        custo_total += precos['soja_saca'] * sacos_de_soja
+
+    if composicao.get('nucleo', 0) > 0 and 'nucleo_kg' in precos:
+        nucleo_ms = total_concentrado_ms * (composicao['nucleo'] / soma_composicao)
+        consumo_total_nucleo_kg = nucleo_ms / MS_NUCLEO
+        custo_total += precos['nucleo_kg'] * consumo_total_nucleo_kg
+
+    if composicao.get('outros', 0) > 0 and 'outros_kg' in precos:
+        outros_ms = total_concentrado_ms * (composicao['outros'] / soma_composicao)
+        consumo_total_outros_kg = outros_ms / MS_OUTROS
+        custo_total += precos['outros_kg'] * consumo_total_outros_kg
+        
+    return custo_total
 
 # --- Barra Lateral com os Parâmetros ---
 st.sidebar.header("Parâmetros da Simulação")
-initial_investment = st.sidebar.number_input("Investimento Inicial (R$)", min_value=1.0, value=100000.0, step=1000.0)
-cost_of_capital = st.sidebar.number_input("Custo de Capital (% ao ano)", min_value=0.0, value=0.0, step=0.1)
-num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=1, value=50, step=1)
-period_months = st.sidebar.slider("Período de Análise (meses)", 1, 48, 12)
-buy_arroba_price = st.sidebar.number_input("Preço da Arroba na Compra (R$/arroba)", min_value=1.0, value=250.00, step=0.01)
-sell_arroba_price = st.sidebar.number_input("Preço da Arroba na Venda (R$/arroba)", min_value=1.0, value=280.00, step=0.01)
-cost_per_head_monthly = st.sidebar.number_input("Custo Mensal por Cabeça (Outros) (R$)", min_value=0.0, value=80.0, step=5.0)
-fixed_costs = st.sidebar.number_input("Outros Custos Fixos no Período (R$)", min_value=0.0, value=5000.0, step=100.0)
+
+st.sidebar.markdown("##### **1. Definições de Compra e Venda**")
+initial_investment = st.sidebar.number_input("Valor Total Investido (R$)", min_value=1.0, value=250000.0, step=1000.0)
+num_heads_bought = st.sidebar.number_input("Quantidade de Cabeças Comprada", min_value=1, value=41, step=1)
+buy_arroba_price = st.sidebar.number_input("Preço da Arroba na Compra (R$/@)", min_value=1.0, value=300.00, step=0.01)
+sell_arroba_price = st.sidebar.number_input("Preço da Arroba na Venda (R$/@)", min_value=1.0, value=300.00, step=0.01)
+arrobas_gain_head = st.sidebar.number_input("Meta de Ganho por Cabeça (@)", min_value=0.0, value=6.0, step=0.5, help="Quantas arrobas cada animal deve ganhar no período.")
+
+total_arrobas_bought = initial_investment / buy_arroba_price if buy_arroba_price > 0 else 0
+arroba_media_inicial = total_arrobas_bought / num_heads_bought if num_heads_bought > 0 else 0
+total_arrobas_final = total_arrobas_bought + (arrobas_gain_head * num_heads_bought)
+
+st.sidebar.markdown(f"**Quantidade Total de Arrobas Compradas:** `{total_arrobas_bought:,.2f} @`")
+st.sidebar.markdown(f"**Arroba Média por Cabeça (na compra):** `{arroba_media_inicial:,.2f} @`")
+st.sidebar.markdown(f"**Total de Arrobas Alcançados (venda):** `{total_arrobas_final:,.2f} @`")
+st.sidebar.markdown("---")
+
+st.sidebar.markdown("##### **2. Custos Operacionais**")
+period_months = st.sidebar.slider("Período de Análise (meses)", 1, 48, 6)
+fixed_costs = st.sidebar.number_input("Outros Custos Fixos no Período (R$)", min_value=0.0, value=5000.0, step=100.0, help="Use para despesas totais como aluguel, impostos, etc.")
+custos_mensais_por_cabeca = st.sidebar.number_input("Custos Mensais Adicionais por Cabeça (R$)", min_value=0.0, value=0.0, step=5.0, help="Use para custos mensais por animal, como vacinas, manejo, etc.")
+cost_of_capital = st.sidebar.number_input("Custo de Oportunidade/Capital (% a.a.)", min_value=0.0, value=16.0, step=0.1, help="Taxa de juros sobre o capital investido.")
+st.sidebar.markdown("---")
 
 st.sidebar.header("Parâmetros da Aplicação Selic")
-selic_rate = st.sidebar.slider("Taxa Selic (% ao ano)", 0.0, 20.0, 10.5, 0.25)
+selic_rate = st.sidebar.slider("Rendimento da Aplicação Selic (% a.a.)", 0.0, 20.0, 15.0, 0.25, help="Taxa de rendimento do investimento alternativo.")
 ir_rate_options = [22.5, 20.0, 17.5, 15.0]
 ir_rate = st.sidebar.selectbox("Alíquota de IR na Aplicação (%)", options=ir_rate_options, index=2)
 
-# --- CABEÇALHO COM TÍTULO E LOGOS ---
+# --- CABEÇALHO ---
 col_title, col_logos = st.columns([2.5, 1])
-
 with col_title:
     st.markdown("<h1 style='text-align: left; font-size: 2.8rem; padding-top: 20px;'>Simulador de Viabilidade: Gado vs. Selic</h1>", unsafe_allow_html=True)
-
 with col_logos:
     logo1, logo2 = st.columns(2)
-    with logo1:
-        display_linked_image("assets/oscapital.jpeg", "https://oscapitaloficial.com.br/", "", 110)
-    with logo2:
-        display_linked_image("assets/IB_logo_stacked1.jpg", "https://ibkr.com/referral/edgleison239", "", 110)
+    with logo1: display_linked_image("assets/oscapital.jpeg", "https://oscapitaloficial.com.br/", "", 110)
+    with logo2: display_linked_image("assets/IB_logo_stacked1.jpg", "https://ibkr.com/referral/edgleison239", "", 110)
 
-# --- Conteúdo Principal (Gráficos e Tabela) em LARGURA TOTAL ---
+# --- CONTEÚDO PRINCIPAL ---
 df_export = load_data('exportacao-kg.csv')
 df_prices = load_data('arroba-sp-historico.csv')
 
@@ -176,23 +223,18 @@ if df_export is not None and df_prices is not None:
         df_merged['mes'] = df_merged['Data'].dt.month
         df_merged['KG_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['kg_liquido'].shift(1)
         
-        # --- CÁLCULO DA MARGEM BASE (PARA GRÁFICOS HISTÓRICOS) ---
-        custo_producao_base = calcular_custo_alimentacao(df_merged, 11.0, 80, 6.5, 85.0) + df_merged['preco_bezerro_brl']
+        # --- CÁLCULO DA MARGEM BASE (GRÁFICOS HISTÓRICOS) ---
+        composicao_base = {'milho': 80, 'soja': 20}
+        precos_base_hist = {'milho_saca': df_merged['preco_milho_brl'], 'soja_saca': df_merged['preco_soja_brl']}
+        custo_producao_base = calcular_custo_alimentacao(11.0, 6.5, 85.0, composicao_base, precos_base_hist) + df_merged['preco_bezerro_brl']
         df_merged['custo_producao_base'] = custo_producao_base
         df_merged['custo_producao_base_media_movel'] = df_merged['custo_producao_base'].rolling(window=12).mean()
-        df_merged['receita_por_cabeca_base'] = df_merged['preco_brl_arroba'] * 28
+        df_merged['receita_por_cabeca_base'] = df_merged['preco_brl_arroba'] * 18
         df_merged['margem_bruta_base'] = df_merged['receita_por_cabeca_base'] - df_merged['custo_producao_base']
 
         # --- LÓGICA E GRÁFICO DO TERMÔMETRO HISTÓRICO ---
         st.markdown("---")
         st.markdown("<h3 style='text-align: center;'>Termômetro de Mercado e Histórico de Sinais</h3>", unsafe_allow_html=True)
-        # ... (O restante do código continua aqui, sem alterações na lógica)
-        # ... (Copie o restante do código da sua última versão funcional aqui)
-
-# O restante do seu código a partir daqui permanece o mesmo,
-# mas sem a indentação de `with col_main:` e sem o bloco final `with col_logos:`.
-# Vou colar o resto para garantir que esteja completo.
-
         sensibilidade_sinal = st.slider("Sensibilidade do Sinal (Nº de Condições Mínimas)", min_value=3, max_value=5, value=4, help="Define o número mínimo de indicadores (de 1 a 5) que precisam apontar na mesma direção para gerar um sinal.")
         df_sazonal = df_merged.groupby('mes')[['preco_brl_arroba']].mean()
         media_sazonal_anual = df_sazonal['preco_brl_arroba'].mean()
@@ -230,13 +272,7 @@ if df_export is not None and df_prices is not None:
             st.info(f"MERCADO MISTO OU NEUTRO - Sem Confluência de Sinais em {last_month_name} (Compra: {num_condicoes_compra_recente}/5, Venda: {num_condicoes_venda_recente}/5)", icon="📊")
         
         with st.expander("Ver explicação do Gráfico de Histórico de Sinais"):
-            st.markdown(f"""
-            Este gráfico é o **backtest visual** do Termômetro de Mercado. Ele plota os sinais de confluência sobre o gráfico de margem bruta para que você possa avaliar seu desempenho histórico.
-            - **Sensibilidade Atual:** Um sinal é gerado quando pelo menos **{sensibilidade_sinal} de 5 indicadores** apontam na mesma direção.
-            - **Sinal de Compra (▲ Verde):** Marcado abaixo da margem, aparece em meses onde o critério de sensibilidade para compra foi atingido.
-            - **Sinal de Venda (▼ Vermelho):** Marcado acima da margem, aparece em meses onde o critério de sensibilidade para venda foi atingido.
-            - **Barras Cinzas:** Representam a margem de lucro (receita - custo) em cada mês, fornecendo o contexto para os sinais.
-            """)
+            st.markdown(f"""Este gráfico é o **backtest visual** do Termômetro de Mercado. Ele plota os sinais de confluência sobre o gráfico de margem bruta para que você possa avaliar seu desempenho histórico.""")
 
         df_sinais_compra = df_merged[df_merged['sinal_confluencia'] == 1]
         df_sinais_venda = df_merged[df_merged['sinal_confluencia'] == -1]
@@ -253,11 +289,7 @@ if df_export is not None and df_prices is not None:
         st.markdown("---")
         st.markdown("### 1. Análise Estratégica de Mercado")
         with st.expander("Ver explicação do Gráfico de Exportação"):
-            st.markdown("""
-            Este gráfico contextualiza o mercado, mostrando a relação entre o **volume de carne bovina exportada pelo Brasil (barras)** e o **preço da arroba no mercado interno (linha amarela)**.
-            - **Interpretação:** Geralmente, altos volumes de exportação podem aumentar a demanda total por gado, exercendo pressão de alta sobre os preços internos.
-            - **Cores:** As barras verdes indicam que a exportação do mês foi **maior** que a do mesmo mês no ano anterior, enquanto as vermelhas indicam que foi **menor**.
-            """)
+            st.markdown("""Este gráfico contextualiza o mercado, mostrando a relação entre o **volume de carne bovina exportada pelo Brasil (barras)** e o **preço da arroba no mercado interno (linha amarela)**.""")
         conditions_export = [df_merged['kg_liquido'] > df_merged['KG_Anterior'], df_merged['kg_liquido'] < df_merged['KG_Anterior']]
         choices_export = ['green', 'red']
         colors_export = np.select(conditions_export, choices_export, default='#1f77b4').tolist()
@@ -270,13 +302,9 @@ if df_export is not None and df_prices is not None:
         fig_export = adicionar_marca_e_fonte(fig_export)
         st.plotly_chart(fig_export, use_container_width=True)
 
-        st.markdown("---")
+        st.markdown("---");
         with st.expander("Ver explicação do Gráfico de Sazonalidade"):
-            st.markdown("""
-            Este gráfico ajuda no **planejamento de longo prazo**, mostrando o comportamento médio dos custos e preços para cada mês do ano (de 2015 até hoje).
-            - **Interpretação:** Ajuda a identificar padrões sazonais, como a **entressafra** (tipicamente no segundo semestre), onde os preços da arroba (linha amarela) historicamente tendem a ser mais altos.
-            - **Estratégia:** O ideal é planejar o ciclo de engorda para que a venda dos animais coincida com os meses de preços historicamente mais altos.
-            """)
+            st.markdown("""Este gráfico ajuda no **planejamento de longo prazo**, mostrando o comportamento médio dos custos e preços para cada mês do ano (de 2015 até hoje).""")
         meses = {1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'}
         df_sazonal_plot = df_merged.groupby('mes')[['preco_brl_arroba', 'custo_producao_base']].mean().reset_index()
         df_sazonal_plot['mes_nome'] = df_sazonal_plot['mes'].map(meses)
@@ -293,12 +321,7 @@ if df_export is not None and df_prices is not None:
         st.markdown("---")
         st.markdown("### 3. Ferramentas de Timing (Compra e Venda)")
         with st.expander("Ver explicação do Gráfico de Relação de Troca (Sinal de Compra)"):
-            st.markdown("""
-            Esta é uma ferramenta para identificar bons momentos de **compra** de bezerros para reposição.
-            - **Interpretação:** A linha amarela mostra a relação de troca, ou seja, **quantos bezerros podem ser comprados com a venda de um Boi de 20 arrobas**.
-            - **Sinal de Compra:** Quando a linha está **acima da média histórica** (tracejada), o poder de compra de bezerros está alto, indicando um momento favorável para adquirir animais de reposição. Mais bezerros por boi = melhor para o comprador.
-            - **Cores das Barras:** As barras rosas indicam meses onde o preço do bezerro foi **menor que no mesmo mês do ano anterior**, sugerindo uma melhora no custo de aquisição em uma base anual.
-            """)
+            st.markdown("""Esta é uma ferramenta para identificar bons momentos de **compra** de bezerros para reposição.""")
         df_merged['Bezerro_Anterior'] = df_merged.groupby(df_merged['Data'].dt.month)['preco_bezerro_brl'].shift(1)
         conditions_bezerro = [df_merged['preco_bezerro_brl'] < df_merged['Bezerro_Anterior']]
         choices_bezerro = ['pink']
@@ -315,12 +338,7 @@ if df_export is not None and df_prices is not None:
 
         st.markdown("---")
         with st.expander("Ver explicação do Gráfico de Reversão da Margem (Sinais de Compra e Venda)"):
-            st.markdown("""
-            Esta é uma ferramenta estatística para identificar momentos de **compra (risco/oportunidade)** e **venda (picos de euforia)**.
-            - **Sinal de Venda (Ciano):** Quando as barras de lucro tocam ou **ultrapassam a banda superior**, a margem está estatisticamente "esticada". Isso sugere um pico de lucratividade, representando um momento oportuno para vender.
-            - **Sinal de Compra (Amarelo):** Quando as barras tocam ou **caem abaixo da banda inferior**, a margem está historicamente "comprimida" ou "barata". Para um investidor de perfil contrário, isso pode sinalizar um ponto de pessimismo máximo, que historicamente precede uma recuperação.
-            - **Cores:** **Verde** para lucro normal, **Vermelho** para prejuízo normal (dentro das bandas).
-            """)
+            st.markdown("""Esta é uma ferramenta estatística para identificar momentos de **compra (risco/oportunidade)** e **venda (picos de euforia)**.""")
         col_std1, col_std2 = st.columns(2)
         with col_std1:
             periodo_media_reversao = st.slider("Período da Média Móvel (meses)", min_value=3, max_value=24, value=12, help="Janela de cálculo para a média e desvio padrão.")
@@ -337,14 +355,10 @@ if df_export is not None and df_prices is not None:
             margem = df_merged['margem_bruta_base'].iloc[i]
             superior = df_merged['banda_superior_reversao'].iloc[i]
             inferior = df_merged['banda_inferior_reversao'].iloc[i]
-            if margem >= superior:
-                colors_margin_reversao.append('cyan')
-            elif margem <= inferior:
-                colors_margin_reversao.append('yellow')
-            elif margem < 0:
-                colors_margin_reversao.append('red')
-            else:
-                colors_margin_reversao.append('green')
+            if margem >= superior: colors_margin_reversao.append('cyan')
+            elif margem <= inferior: colors_margin_reversao.append('yellow')
+            elif margem < 0: colors_margin_reversao.append('red')
+            else: colors_margin_reversao.append('green')
 
         fig_reversao = go.Figure()
         fig_reversao.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['banda_superior_reversao'], mode='lines', line=dict(color='rgba(255,255,255,0)'), showlegend=False))
@@ -359,33 +373,56 @@ if df_export is not None and df_prices is not None:
         # --- SEÇÃO 2: SIMULAÇÃO DE CUSTO E VIABILIDADE ---
         st.markdown("---")
         st.markdown("### 2. Simulação de Custo e Viabilidade")
-        st.markdown("##### Parâmetros de Engorda")
-        col_gain1, col_gain2 = st.columns(2)
-        with col_gain1:
-            peso_inicial_bezerro = st.number_input("Peso Inicial do Bezerro (@)", min_value=1.0, value=7.0, step=0.5, help="Peso do animal no momento da compra.")
-        with col_gain2:
-            arrobas_gain_head = st.number_input("Ganho de Arrobas por Cabeça", min_value=1.0, value=11.0, step=0.5, help="Quantas arrobas cada animal deve ganhar no período.")
         
         st.markdown("##### Parâmetros da Dieta")
-        percent_milho = st.slider("Índice de Alimentação (% Milho na ração)", min_value=0, max_value=100, value=80, step=5, help="A composição do concentrado entre milho e farelo de soja.")
-        st.info(f"**Composição do concentrado:** {percent_milho}% Milho / {100-percent_milho}% Farelo de Soja", icon="🌽")
+        st.markdown("###### Composição do Concentrado (%)")
+        col_comp1, col_comp2, col_comp3, col_comp4 = st.columns(4)
+        with col_comp1: percent_milho = st.number_input("% Milho", min_value=0, max_value=100, value=80, step=1)
+        with col_comp2: percent_soja = st.number_input("% Soja", min_value=0, max_value=100, value=20, step=1)
+        with col_comp3: percent_nucleo = st.number_input("% Núcleo", min_value=0, max_value=100, value=0, step=1)
+        with col_comp4: percent_outros = st.number_input("% Outros", min_value=0, max_value=100, value=0, step=1)
+
+        soma_percentuais = percent_milho + percent_soja + percent_nucleo + percent_outros
+        if soma_percentuais != 100:
+            st.warning(f"A soma dos percentuais da dieta é {soma_percentuais}%. O ideal é que seja 100%.", icon="⚠️")
+        
+        st.info(f"**Composição atual:** {percent_milho}% Milho / {percent_soja}% Soja / {percent_nucleo}% Núcleo / {percent_outros}% Outros", icon="🌽")
         
         col_eff1, col_eff2 = st.columns(2)
-        with col_eff1:
-            conversao_alimentar_input = st.number_input("Conversão Alimentar (kg MS / kg PV)", min_value=4.0, value=6.5, step=0.1, help="Kg de Matéria Seca (MS) necessários para ganhar 1 kg de Peso Vivo (PV). Menor = Mais eficiente.")
-        with col_eff2:
-            pct_concentrado_input = st.number_input("% de Concentrado na Dieta", min_value=50.0, max_value=100.0, value=85.0, step=1.0, help="Percentual da dieta total que é composta por concentrado (milho/soja).")
+        with col_eff1: conversao_alimentar_input = st.number_input("Conversão Alimentar (kg MS / kg PV)", min_value=4.0, value=5.0, step=0.1, help="Kg de Matéria Seca (MS) necessários para ganhar 1 kg de Peso Vivo (PV).")
+        with col_eff2: pct_concentrado_input = st.number_input("% de Concentrado na Dieta", min_value=50.0, max_value=100.0, value=85.0, step=1.0, help="Percentual da dieta total que é composta por concentrado.")
+        
+        st.markdown("##### Preços dos Insumos para a Simulação Final")
+        latest_prices = df_merged.tail(1)
+        default_milho = latest_prices['preco_milho_brl'].iloc[0] if not latest_prices.empty else 63.71
+        default_soja = latest_prices['preco_soja_brl'].iloc[0] if not latest_prices.empty else 139.04
+
+        col_preco1, col_preco2 = st.columns(2)
+        with col_preco1:
+            preco_milho_input = st.number_input("Preço da Saca de Milho (60kg) (R$)", min_value=1.0, value=default_milho, step=0.5)
+            preco_nucleo_input = st.number_input("Preço do Núcleo (R$/kg)", min_value=0.0, value=5.0, step=0.1)
+        with col_preco2:
+            preco_soja_input = st.number_input("Preço da Saca de Soja (50kg) (R$)", min_value=1.0, value=default_soja, step=0.5)
+            preco_outros_input = st.number_input("Preço de Outros Insumos (R$/kg)", min_value=0.0, value=1.0, step=0.1)
+
+        KG_SACA_MILHO = 60
+        KG_SACA_SOJA = 50
+        custo_kg_racao = 0
+        if soma_percentuais > 0:
+            preco_kg_milho = preco_milho_input / KG_SACA_MILHO
+            preco_kg_soja = preco_soja_input / KG_SACA_SOJA
+            custo_kg_racao = ((preco_kg_milho * percent_milho) + (preco_kg_soja * percent_soja) + (preco_nucleo_input * percent_nucleo) + (preco_outros_input * percent_outros)) / soma_percentuais
+        st.success(f"Custo do Concentrado: R$ {custo_kg_racao:,.2f} por kg", icon="🧮")
         
         with st.expander("Ver explicação do Gráfico de Custo vs. Receita"):
-            st.markdown("""
-            Este é o **simulador principal**. Ele compara o `Custo de Produção por Cabeça` (barras) com a `Receita Estimada por Cabeça` (linha amarela), ambos na mesma escala (R$).
-            - **Interpretação:** É a visualização direta da lucratividade da operação, baseada nos parâmetros que você define acima.
-            - **Cores:** As barras **azuis** indicam meses onde a receita superou o custo (lucro), enquanto as barras **vermelhas** indicam o contrário (prejuízo).
-            """)
+            st.markdown("""Este gráfico de referência mostra a relação histórica entre custo e receita por cabeça, usando os parâmetros da dieta que você definiu e os PREÇOS HISTÓRICOS dos insumos.""")
         
-        custo_alimentacao = calcular_custo_alimentacao(df_merged, arrobas_gain_head, percent_milho, conversao_alimentar_input, pct_concentrado_input)
-        df_merged['custo_producao_interativo'] = custo_alimentacao + df_merged['preco_bezerro_brl']
-        peso_final_em_arrobas_dinamico = peso_inicial_bezerro + arrobas_gain_head
+        composicao_interativa = {'milho': percent_milho, 'soja': percent_soja, 'nucleo': percent_nucleo, 'outros': percent_outros}
+        precos_interativos_hist = {'milho_saca': df_merged['preco_milho_brl'], 'soja_saca': df_merged['preco_soja_brl'], 'nucleo_kg': preco_nucleo_input, 'outros_kg': preco_outros_input}
+        custo_bezerro_hist = df_merged['preco_brl_arroba'] * arroba_media_inicial 
+        custo_alimentacao_hist = calcular_custo_alimentacao(arrobas_gain_head, conversao_alimentar_input, pct_concentrado_input, composicao_interativa, precos_interativos_hist)
+        df_merged['custo_producao_interativo'] = custo_alimentacao_hist + custo_bezerro_hist
+        peso_final_em_arrobas_dinamico = arroba_media_inicial + arrobas_gain_head
         df_merged['receita_por_cabeca_interativa'] = df_merged['preco_brl_arroba'] * peso_final_em_arrobas_dinamico
         df_merged['margem_bruta_interativa'] = df_merged['receita_por_cabeca_interativa'] - df_merged['custo_producao_interativo']
         colors_custo = ['#DC143C' if val < 0 else '#1f77b4' for val in df_merged['margem_bruta_interativa']]
@@ -393,7 +430,7 @@ if df_export is not None and df_prices is not None:
         fig_custo = go.Figure()
         fig_custo.add_trace(go.Bar(x=df_merged['Data'], y=df_merged['custo_producao_interativo'], name='Custo por Cabeça (R$)', marker_color=colors_custo))
         fig_custo.add_trace(go.Scatter(x=df_merged['Data'], y=df_merged['receita_por_cabeca_interativa'], name=f'Receita por Cabeça ({peso_final_em_arrobas_dinamico:.1f}@) (R$)', mode='lines', line=dict(color='yellow')))
-        fig_custo.update_layout(title_text='Custo de Produção vs. Receita Estimada por Cabeça', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig_custo.update_layout(title_text='Referência Histórica: Custo de Produção vs. Receita Estimada por Cabeça', plot_bgcolor='rgba(17,17,17,0.9)', paper_bgcolor='rgba(17,17,17,0.9)', font_color="white", title_x=0.5, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         fig_custo.update_yaxes(title_text="<b>Valor por Cabeça</b> (R$)")
         fig_custo = adicionar_marca_e_fonte(fig_custo)
         st.plotly_chart(fig_custo, use_container_width=True)
@@ -402,32 +439,36 @@ if df_export is not None and df_prices is not None:
         st.markdown("---")
         st.markdown("<h3 style='text-align: center;'>Análise da Sua Simulação Específica</h3>", unsafe_allow_html=True)
         with st.expander("Ver explicação do Gráfico de Comparação de Investimentos e Resumo"):
-            st.markdown("""
-            Esta seção final apresenta um resumo da sua simulação e compara o investimento em produção de gado com uma aplicação financeira de renda fixa atrelada à taxa Selic.
-            - **Gráfico de Linhas:** Mostra a evolução do valor acumulado ao longo do período de análise para ambas as opções de investimento (Gado vs. Selic). A linha tracejada vermelha representa uma projeção simplificada da taxa Selic.
-            - **Tabela de Resumo:** Detalha os lucros totais e as Taxas Internas de Retorno (TIR) mensal para cada tipo de investimento, além de um detalhamento dos custos e ganhos para a produção de gado.
-            """)
+            st.markdown("Esta seção final apresenta o resultado da sua simulação, comparando o investimento na operação de gado com uma aplicação financeira atrelada à taxa Selic.")
         
-        total_arrobas_bought = initial_investment / buy_arroba_price if buy_arroba_price > 0 else 0
-        arrobas_gain_total = arrobas_gain_head * num_heads_bought
-        total_arrobas_sold = total_arrobas_bought + arrobas_gain_total
-        revenue = total_arrobas_sold * sell_arroba_price
-        operational_cost = (cost_per_head_monthly * num_heads_bought * period_months) + fixed_costs
-        capital_cost_value = initial_investment * (cost_of_capital / 100) * (period_months / 12)
-        total_cost_cattle = initial_investment + operational_cost + capital_cost_value
+        custo_aquisicao = initial_investment
+        precos_simulacao = {'milho_saca': preco_milho_input, 'soja_saca': preco_soja_input, 'nucleo_kg': preco_nucleo_input, 'outros_kg': preco_outros_input}
+        custo_alimentacao_unitario = calcular_custo_alimentacao(arrobas_gain_head, conversao_alimentar_input, pct_concentrado_input, composicao_interativa, precos_simulacao)
+        custo_alimentacao_total = custo_alimentacao_unitario * num_heads_bought
+        custos_mensais_adicionais_total = custos_mensais_por_cabeca * num_heads_bought * period_months
+        outros_custos_total = fixed_costs + custos_mensais_adicionais_total
+        capital_cost_value = custo_aquisicao * (cost_of_capital / 100) * (period_months / 12)
+        total_cost_cattle = custo_aquisicao + custo_alimentacao_total + outros_custos_total + capital_cost_value
+        peso_final_por_cabeca = arroba_media_inicial + arrobas_gain_head
+        revenue = num_heads_bought * peso_final_por_cabeca * sell_arroba_price
         profit_cattle = revenue - total_cost_cattle
         selic_monthly_rate = (1 + selic_rate / 100)**(1/12) - 1
-        selic_final_value = initial_investment * (1 + selic_monthly_rate)**period_months
-        selic_gross_profit = selic_final_value - initial_investment
+        selic_final_value = custo_aquisicao * (1 + selic_monthly_rate)**period_months
+        selic_gross_profit = selic_final_value - custo_aquisicao
         profit_selic = selic_gross_profit * (1 - ir_rate / 100)
-        cash_flow_cattle = [-initial_investment] + [0] * (period_months - 1) + [revenue - operational_cost - capital_cost_value]
-        irr_monthly_cattle = npf.irr(cash_flow_cattle) if sum(cash_flow_cattle) > 0 else 0
+        valor_final_operacao = revenue - custo_alimentacao_total - outros_custos_total - capital_cost_value
+        cash_flow_cattle = [-custo_aquisicao] + [0] * (period_months - 1) + [valor_final_operacao]
+        irr_monthly_cattle = 0
+        if custo_aquisicao > 0 and np.sum(cash_flow_cattle) != 0 :
+            try: irr_monthly_cattle = npf.irr(cash_flow_cattle)
+            except: irr_monthly_cattle = 0
         irr_monthly_selic = selic_monthly_rate * (1 - ir_rate / 100)
+        
         months = np.arange(period_months + 1)
-        gado_values = np.linspace(initial_investment, initial_investment + profit_cattle, len(months))
-        selic_values = [initial_investment * (1 + irr_monthly_selic)**m for m in months]
+        gado_values = np.linspace(custo_aquisicao, custo_aquisicao + profit_cattle, len(months))
+        selic_values = [custo_aquisicao * (1 + irr_monthly_selic)**m for m in months]
         df_comp = pd.DataFrame({'Mês': months, 'Produção de Gado': gado_values, 'Aplicação Selic': selic_values})
-        selic_trend = np.interp(months, [7, 19, 31, 43], [10.5, 9.5, 9.0, 8.5], left=10.5, right=8.5)
+        
         fig_comp, ax1 = plt.subplots(figsize=(12, 5))
         sns.set_style("darkgrid", {"axes.facecolor": "#111111", "grid.color": "#444444"})
         ax1.set_facecolor('#111111')
@@ -439,6 +480,7 @@ if df_export is not None and df_prices is not None:
         ax1.set_title('Comparativo de Investimentos: Produção de Gado x Selic', fontsize=16, color='white')
         ax1.tick_params(colors='white', which='both')
         ax2 = ax1.twinx()
+        selic_trend = np.full(len(months), selic_rate)
         sns.lineplot(x=months, y=selic_trend, ax=ax2, color='red', linestyle='--', label='Taxa Selic Projetada (%)')
         ax2.set_ylabel('Taxa Selic (% ao ano)', color='white')
         ax2.tick_params(colors='white', which='both')
@@ -446,30 +488,68 @@ if df_export is not None and df_prices is not None:
         lines2, labels2 = ax2.get_legend_handles_labels()
         legend = ax2.legend(lines + lines2, labels + labels2, loc='upper left', frameon=True)
         legend.get_frame().set_facecolor('#333333')
-        for text in legend.get_texts():
-            text.set_color("white")
+        for text in legend.get_texts(): text.set_color("white")
         ax1.get_legend().remove()
         fig_comp = adicionar_marca_e_fonte(fig_comp, is_matplotlib=True)
         st.pyplot(fig_comp)
+        
         st.markdown("---")
         st.subheader("Resumo da Operação")
         
-        detalhes_gado = f"""
-        | Métrica | Valor |
-        |---|---|
-        | Ganho com Aumento de Arrobas (R$) | R$ {arrobas_gain_total * sell_arroba_price:,.2f} |
-        | Ganho/Perda com Diferença de Preço (R$) | R$ {(sell_arroba_price - buy_arroba_price) * total_arrobas_bought:,.2f} |
-        | Custo de Capital (Juros) (R$) | - R$ {capital_cost_value:,.2f} |
-        | Custo Operacional Total (R$) | - R$ {operational_cost:,.2f} |
-        """
+        col1_resumo, col2_detalhes = st.columns(2)
+        with col1_resumo:
+            resumo_data = {
+                'Métrica': ['Lucro Total - Gado (R$)', 'Lucro Total - Selic (R$)', 'TIR Mensal - Gado (%)', 'TIR Mensal - Selic (%)'],
+                'Valor': [f"R$ {profit_cattle:,.2f}", f"R$ {profit_selic:,.2f}", f"{irr_monthly_cattle * 100:.2f}%", f"{irr_monthly_selic * 100:.2f}%"]
+            }
+            st.table(resumo_data)
+        with col2_detalhes:
+            detalhes_gado = f"""
+            | Detalhamento da Operação Gado | Valor |
+            |---|---|
+            | (+) Receita Total da Venda | R$ {revenue:,.2f} |
+            | (-) Custo de Aquisição dos Animais | - R$ {custo_aquisicao:,.2f} |
+            | (-) Custo com Alimentação | - R$ {custo_alimentacao_total:,.2f} |
+            | (-) Outros Custos (Fixos + Mensais) | - R$ {outros_custos_total:,.2f} |
+            | (-) Custo de Capital (Juros) | - R$ {capital_cost_value:,.2f} |
+            | **(=) Lucro/Prejuízo Total** | **R$ {profit_cattle:,.2f}** |
+            """
+            st.markdown(detalhes_gado)
+
+        st.markdown("---")
+        st.subheader("Parâmetros Utilizados na Simulação")
         
-        resumo_data = {
-            'Métrica': ['Lucro Total com Produção de Gado (R$)', 'Lucro Total com Selic (R$)', 'TIR Mensal - Gado (%)', 'TIR Mensal - Selic (%)', '--- Detalhamento do Gado ---'],
-            'Valor': [f"R$ {profit_cattle:,.2f}", f"R$ {profit_selic:,.2f}", f"{irr_monthly_cattle * 100:.2f}%" if irr_monthly_cattle is not None else "N/A", f"{irr_monthly_selic * 100:.2f}%", '']
-        }
-        st.table(resumo_data)
-        st.markdown(detalhes_gado)
+        param_col1, param_col2, param_col3 = st.columns(3)
+        with param_col1:
+            st.markdown("##### **Compra, Venda e Prazos**")
+            st.markdown(f"- **Valor Total Investido:** `R$ {initial_investment:,.2f}`")
+            st.markdown(f"- **Nº de Cabeças:** `{num_heads_bought}`")
+            st.markdown(f"- **Preço de Compra:** `R$ {buy_arroba_price:,.2f} /@`")
+            st.markdown(f"- **Preço de Venda:** `R$ {sell_arroba_price:,.2f} /@`")
+            st.markdown(f"- **Meta de Ganho:** `{arrobas_gain_head:,.1f} @ /cabeça`")
+            st.markdown(f"- **Período:** `{period_months} meses`")
+        with param_col2:
+            st.markdown("##### **Custos e Dieta**")
+            st.markdown(f"- **Custos Fixos Totais:** `R$ {fixed_costs:,.2f}`")
+            st.markdown(f"- **Custo Mensal Adicional:** `R$ {custos_mensais_por_cabeca:,.2f} /cabeça`")
+            st.markdown(f"- **Conversão Alimentar:** `{conversao_alimentar_input:,.2f}`")
+            st.markdown(f"- **% Concentrado na Dieta:** `{pct_concentrado_input:,.1f}%`")
+            st.markdown(f"- **Preço Milho (saca):** `R$ {preco_milho_input:,.2f}`")
+            st.markdown(f"- **Preço Soja (saca):** `R$ {preco_soja_input:,.2f}`")
+            st.markdown(f"- **Preço Núcleo (kg):** `R$ {preco_nucleo_input:,.2f}`")
+            st.markdown(f"- **Preço Outros (kg):** `R$ {preco_outros_input:,.2f}`")
+        with param_col3:
+            st.markdown("##### **Financeiro e Comparativo**")
+            st.markdown(f"- **Custo de Capital:** `{cost_of_capital:,.2f}% a.a.`")
+            st.markdown(f"- **Taxa Selic (Benchmark):** `{selic_rate:,.2f}% a.a.`")
+            st.markdown(f"- **Alíquota de IR (Selic):** `{ir_rate:,.1f}%`")
+            st.markdown("##### **Composição da Dieta**")
+            st.markdown(f"- **% Milho:** `{percent_milho}%`")
+            st.markdown(f"- **% Soja:** `{percent_soja}%`")
+            st.markdown(f"- **% Núcleo:** `{percent_nucleo}%`")
+            st.markdown(f"- **% Outros:** `{percent_outros}%`")
+
     except KeyError as e:
-        st.error(f"Erro de processamento: {e}. Verifique se os nomes das colunas nos seus ficheiros CSV estão corretos.")
+        st.error(f"Erro de processamento: {e}. Verifique se os nomes das colunas nos seus ficheiros CSV estão corretos ('{e.args[0]}').")
     except Exception as e:
-        st.error(f"Ocorreu um erro inesperado ao processar os dados históricos: {e}")
+        st.error(f"Ocorreu um erro inesperado: {e}")
