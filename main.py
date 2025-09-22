@@ -483,6 +483,14 @@ if df_export is not None and df_prices is not None:
                 
         irr_monthly_selic = selic_monthly_rate * (1 - ir_rate / 100)
         
+        # CÁLCULOS DOS NOVOS KPIs
+        total_kg_concentrado = custo_alimentacao_total / custo_kg_racao if custo_kg_racao > 0 else 0
+        custo_diario_alimentacao_lote = custo_alimentacao_total / (period_months * 30) if period_months > 0 else 0
+        custo_diario_alimentacao_cabeca = custo_diario_alimentacao_lote / num_heads_bought if num_heads_bought > 0 else 0
+        custo_operacional_total = custo_alimentacao_total + outros_custos_total
+        total_arrobas_produzidas = arrobas_gain_head * num_heads_bought
+        custo_arroba_produzida = custo_operacional_total / total_arrobas_produzidas if total_arrobas_produzidas > 0 else 0
+        
         months = np.arange(period_months + 1)
         gado_values = np.linspace(custo_aquisicao, custo_aquisicao + profit_cattle, len(months))
         selic_values = [custo_aquisicao * (1 + irr_monthly_selic)**m for m in months]
@@ -518,8 +526,14 @@ if df_export is not None and df_prices is not None:
         col1_resumo, col2_detalhes = st.columns(2)
         with col1_resumo:
             resumo_data = {
-                'Métrica': ['Lucro Total - Gado (R$)', 'Lucro Total - Selic (R$)', 'TIR Mensal - Gado (%)', 'TIR Mensal - Selic (%)'],
-                'Valor': [f"R$ {profit_cattle:,.2f}", f"R$ {profit_selic:,.2f}", f"{irr_monthly_cattle * 100:.2f}%", f"{irr_monthly_selic * 100:.2f}%"]
+                'Métrica': [
+                    'Lucro Total - Gado (R$)', 'Lucro Total - Selic (R$)', 
+                    'TIR Mensal - Gado (%)', 'TIR Mensal - Selic (%)'
+                ],
+                'Valor': [
+                    f"R$ {profit_cattle:,.2f}", f"R$ {profit_selic:,.2f}", 
+                    f"{irr_monthly_cattle * 100:.2f}%", f"{irr_monthly_selic * 100:.2f}%"
+                ]
             }
             st.table(resumo_data)
         with col2_detalhes:
@@ -528,9 +542,11 @@ if df_export is not None and df_prices is not None:
             |---|---|
             | (+) Receita Total da Venda | R$ {revenue:,.2f} |
             | (-) Custo de Aquisição dos Animais | - R$ {custo_aquisicao:,.2f} |
-            | (-) Custo com Concentrado | - R$ {custo_alimentacao_total:,.2f} |
+            | (-) Custo com Concentrado ({total_kg_concentrado:,.0f} kg) | - R$ {custo_alimentacao_total:,.2f} |
+            | *Custo Diário por Cabeça (Alim.)* | *R$ {custo_diario_alimentacao_cabeca:,.2f}* |
             | (-) Outros Custos (Fixos + Mensais/Vol.) | - R$ {outros_custos_total:,.2f} |
             | (-) Custo de Capital (Juros) | - R$ {capital_cost_value:,.2f} |
+            | **(=) Custo da Arroba Produzida** | **R$ {custo_arroba_produzida:,.2f}** |
             | **(=) Lucro/Prejuízo Total** | **R$ {profit_cattle:,.2f}** |
             """
             st.markdown(detalhes_gado)
